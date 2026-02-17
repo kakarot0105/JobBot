@@ -8,6 +8,7 @@ import asyncio
 import json
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+NOTIFICATION_CHAT_ID = -5237585056  # JobBot Alerts group
 
 # Conversation states
 SETTING_KEYWORDS, SETTING_LOCATION, SETTING_SALARY, SETTING_LEVEL, SETTING_TYPE = range(5)
@@ -74,7 +75,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text(text="✅ All jobs already sent! Check back later.")
                 return
             
-            # Send jobs
+            # Send jobs to notification chat
             for job in unsent:
                 msg = f"""
 💼 **{job['title']}**
@@ -86,7 +87,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 [Apply Here]({job['url']})
 """
                 await context.bot.send_message(
-                    chat_id=query.from_user.id,
+                    chat_id=NOTIFICATION_CHAT_ID,
                     text=msg,
                     parse_mode="Markdown"
                 )
