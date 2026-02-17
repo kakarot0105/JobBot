@@ -4,6 +4,7 @@ import asyncio
 from typing import List, Dict
 from datetime import datetime
 import re
+import xml.etree.ElementTree as ET
 from .db import add_job, get_filters
 
 
@@ -110,6 +111,88 @@ class JobScraper:
         
         return jobs
 
+    async def search_indeed(self, keywords: List[str], location: str = None) -> List[Dict]:
+        """Search Indeed via RSS feeds."""
+        jobs = []
+        try:
+            async with aiohttp.ClientSession() as session:
+                keyword = keywords[0] if keywords else "Data Engineer"
+                # Indeed RSS feed format
+                url = f"https://www.indeed.com/rss?q={keyword}&l={location or 'Remote'}&filter=1"
+                
+                async with session.get(url, timeout=10) as resp:
+                    if resp.status == 200:
+                        content = await resp.text()
+                        root = ET.fromstring(content)
+                        
+                        # Parse RSS items
+                        for item in root.findall('.//item')[:20]:
+                            title_elem = item.find('title')
+                            desc_elem = item.find('description')
+                            link_elem = item.find('link')
+                            
+                            if title_elem is not None and link_elem is not None:
+                                title = title_elem.text or "Job"
+                                link = link_elem.text or ""
+                                description = desc_elem.text or "" if desc_elem is not None else ""
+                                
+                                # Extract company name from description
+                                company = "Indeed Job"
+                                if "Company" in description:
+                                    try:
+                                        company = description.split("Company")[1].split("<")[0].strip() or "Indeed Job"
+                                    except:
+                                        pass
+                                
+                                jobs.append({
+                                    "title": title,
+                                    "company": company,
+                                    "location": location or "Remote",
+                                    "salary": "Negotiable",
+                                    "job_type": "Full-time",
+                                    "source": "indeed",
+                                    "url": link,
+                                    "description": description[:200]
+                                })
+        except Exception as e:
+            print(f"Indeed RSS error: {e}")
+        
+        return jobs
+
+    async def search_linkedin(self, keywords: List[str], location: str = None) -> List[Dict]:
+        """Search LinkedIn via RSS feeds (job board RSS)."""
+        jobs = []
+        try:
+            async with aiohttp.ClientSession() as session:
+                keyword = keywords[0] if keywords else "Data Engineer"
+                # LinkedIn job board RSS
+                url = f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting?keywords={keyword}&location={location or 'Remote'}&count=20"
+                
+                async with session.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"}) as resp:
+                    if resp.status == 200:
+                        try:
+                            data = await resp.json()
+                            
+                            if "elements" in data:
+                                for job in data["elements"][:20]:
+                                    jobs.append({
+                                        "title": job.get("title", "Job"),
+                                        "company": job.get("companyName", "LinkedIn Job"),
+                                        "location": job.get("location", location or "Remote"),
+                                        "salary": job.get("salary", "Negotiable"),
+                                        "job_type": job.get("jobType", "Full-time"),
+                                        "source": "linkedin",
+                                        "url": job.get("applyUrl", "https://www.linkedin.com/jobs/"),
+                                        "description": job.get("description", "")[:200]
+                                    })
+                        except:
+                            # Fallback: if JSON parsing fails
+                            pass
+        except Exception as e:
+            print(f"LinkedIn search error: {e}")
+        
+        return jobs
+
     async def search_himalayas(self, keywords: List[str], location: str = None) -> List[Dict]:
         """Search Himalayas.app job board (free API)."""
         jobs = []
@@ -161,6 +244,8 @@ class JobScraper:
             self.search_remoteok(keywords, location),
             self.search_justjoinit(keywords, location),
             self.search_himalayas(keywords, location),
+            self.search_indeed(keywords, location),
+            self.search_linkedin(keywords, location),
         ]
         
         results = await asyncio.gather(*tasks, return_exceptions=True)

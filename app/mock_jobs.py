@@ -101,6 +101,26 @@ MOCK_JOBS = [
         "url": "https://uber.com/careers/data-engineer-ii",
         "description": "Build and maintain real-time data systems. Work with billions of events daily."
     },
+    {
+        "title": "Data Engineer - Mid Level",
+        "company": "Google",
+        "location": "Remote, USA",
+        "salary": "$175,000 - $240,000",
+        "job_type": "Full-time",
+        "source": "indeed",
+        "url": "https://www.indeed.com/viewjob?jk=data-engineer-google",
+        "description": "Join Google's data infrastructure team. Work on distributed systems and data pipelines."
+    },
+    {
+        "title": "Senior Data Engineer",
+        "company": "Meta",
+        "location": "Remote",
+        "salary": "$185,000 - $260,000",
+        "job_type": "Full-time",
+        "source": "linkedin",
+        "url": "https://www.linkedin.com/jobs/view/data-engineer-meta",
+        "description": "Build scalable data systems. Lead data engineering initiatives at Meta."
+    },
 ]
 
 
