@@ -110,36 +110,48 @@ class JobScraper:
         
         return jobs
 
-    async def search_github_jobs(self, keywords: List[str], location: str = None) -> List[Dict]:
-        """Search GitHub Jobs."""
+    async def search_himalayas(self, keywords: List[str], location: str = None) -> List[Dict]:
+        """Search Himalayas.app job board (free API)."""
         jobs = []
         try:
-            # GitHub Jobs API (note: may be deprecated, using alternative)
+            # Himalayas has a free job API
             async with aiohttp.ClientSession() as session:
-                for keyword in keywords:
-                    url = "https://api.github.com/search/repositories"
-                    params = {
-                        "q": f"language:python jobs {keyword}",
-                        "sort": "stars",
-                        "per_page": 5
-                    }
-                    
-                    async with session.get(url, params=params, timeout=10, headers={"User-Agent": "JobBot"}) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            for repo in data.get('items', [])[:10]:
-                                jobs.append({
-                                    "title": f"{keyword} Developer",
-                                    "company": repo.get('owner', {}).get('login', 'N/A'),
-                                    "location": "Remote",
-                                    "salary": "Competitive",
-                                    "job_type": "Full-time",
-                                    "source": "github",
-                                    "url": repo.get('html_url', ''),
-                                    "description": repo.get('description', '')[:200]
-                                })
+                # Search for data engineering jobs
+                url = "https://api.thehimalayasapp.com/api/v1/roles/search"
+                params = {
+                    "q": "data engineer",
+                    "count": 20,
+                    "sort": "-date_posted"
+                }
+                
+                async with session.get(url, params=params, timeout=10) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        for job in data.get('roles', [])[:15]:
+                            # Filter by location if specified
+                            job_loc = job.get('location', 'Remote').lower()
+                            if location and location.lower() == 'usa':
+                                if 'usa' not in job_loc and 'remote' not in job_loc and 'united states' not in job_loc:
+                                    continue
+                            
+                            salary = "Negotiable"
+                            if job.get('salary_min') and job.get('salary_max'):
+                                salary = f"${job.get('salary_min')}-${job.get('salary_max')}"
+                            elif job.get('salary_min'):
+                                salary = f"${job.get('salary_min')}+"
+                            
+                            jobs.append({
+                                "title": job.get('title', 'Data Engineer'),
+                                "company": job.get('company_name', 'N/A'),
+                                "location": job.get('location', 'Remote'),
+                                "salary": salary,
+                                "job_type": job.get('job_type', 'Full-time'),
+                                "source": "himalayas",
+                                "url": job.get('url', ''),
+                                "description": job.get('description', '')[:200]
+                            })
         except Exception as e:
-            print(f"GitHub search error: {e}")
+            print(f"Himalayas search error: {e}")
         
         return jobs
 
@@ -148,7 +160,7 @@ class JobScraper:
         tasks = [
             self.search_remoteok(keywords, location),
             self.search_justjoinit(keywords, location),
-            self.search_github_jobs(keywords, location),
+            self.search_himalayas(keywords, location),
         ]
         
         results = await asyncio.gather(*tasks, return_exceptions=True)

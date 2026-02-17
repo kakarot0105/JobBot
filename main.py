@@ -2,9 +2,11 @@
 """JobBot - Automated job search and notifications."""
 import asyncio
 import os
+import sys
 from app.db import add_user, set_filters
 from app.jobs import search_jobs_for_user
 from app.telegram_bot import create_bot
+from app.mock_jobs import get_mock_jobs
 
 # Hardcoded user preferences (for @banna)
 DEFAULT_USER_TELEGRAM_ID = "6756402815"
@@ -32,17 +34,25 @@ async def setup_user():
     return user_id
 
 
-async def daily_search():
+async def daily_search(use_mock: bool = False):
     """Run daily job search."""
     print("\n🔍 Starting daily job search...")
     user_id = await setup_user()
     
     try:
+        # Try real search first
         jobs = await search_jobs_for_user(user_id)
+        
+        # If no jobs found and in test mode, use mock data
+        if not jobs and use_mock:
+            print("⚠️  External APIs unavailable (sandbox environment)")
+            print("📌 Using mock job data for demonstration...")
+            jobs = get_mock_jobs()
+        
         print(f"✅ Found {len(jobs)} jobs!")
         
-        # Print first 3 jobs
-        for i, job in enumerate(jobs[:3]):
+        # Print first 10 jobs
+        for i, job in enumerate(jobs[:10]):
             print(f"\n{i+1}. {job['title']} @ {job['company']}")
             print(f"   Location: {job['location']}")
             print(f"   Salary: {job['salary']}")
@@ -55,12 +65,14 @@ async def daily_search():
 
 async def main():
     """Main entry point."""
-    import sys
-    
     if len(sys.argv) > 1:
         if sys.argv[1] == "search":
             # Run job search
-            await daily_search()
+            use_mock = "--mock" in sys.argv
+            await daily_search(use_mock=use_mock)
+        elif sys.argv[1] == "test":
+            # Run with mock data for testing
+            await daily_search(use_mock=True)
         elif sys.argv[1] == "telegram":
             # Run Telegram bot
             print("🤖 Starting Telegram bot...")
@@ -71,9 +83,11 @@ async def main():
             await setup_user()
         else:
             print("Usage:")
-            print("  python main.py search     - Run job search")
-            print("  python main.py telegram   - Start Telegram bot")
-            print("  python main.py setup      - Setup default user")
+            print("  python main.py search        - Run job search (real)")
+            print("  python main.py test          - Run with mock jobs (sandbox)")
+            print("  python main.py search --mock - Force mock data")
+            print("  python main.py telegram      - Start Telegram bot")
+            print("  python main.py setup         - Setup default user")
     else:
         # Default: run both
         print("JobBot - Automated Job Search")
@@ -82,8 +96,8 @@ async def main():
         # Setup user
         await setup_user()
         
-        # Search jobs
-        await daily_search()
+        # Search jobs (with mock fallback)
+        await daily_search(use_mock=True)
         
         print("\n" + "=" * 40)
         print("To use Telegram bot, run: python main.py telegram")
