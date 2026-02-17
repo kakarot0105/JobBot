@@ -8,7 +8,7 @@ import asyncio
 import json
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
-NOTIFICATION_CHAT_ID = -5237585056  # JobBot Alerts group
+NOTIFICATION_CHAT_ID = -1003357441031  # JobBot Alerts supergroup (migrated)
 
 # Conversation states
 SETTING_KEYWORDS, SETTING_LOCATION, SETTING_SALARY, SETTING_LEVEL, SETTING_TYPE = range(5)

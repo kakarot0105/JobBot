@@ -11,7 +11,7 @@ from telegram import Bot
 
 # Hardcoded user preferences (for @banna)
 DEFAULT_USER_TELEGRAM_ID = "6756402815"
-NOTIFICATION_CHAT_ID = -5237585056  # JobBot Alerts group
+NOTIFICATION_CHAT_ID = -1003357441031  # JobBot Alerts supergroup (migrated)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 
 DEFAULT_FILTERS = {
