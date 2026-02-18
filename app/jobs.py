@@ -72,7 +72,8 @@ class JobScraper:
 
         try:
             async with aiohttp.ClientSession() as session:
-                query = f"{' '.join(keywords)} {location or 'remote'}"
+                # Use first keyword for cleaner API query
+                query = f"{keywords[0]} {location or 'remote'}"
                 url = "https://jsearch.p.rapidapi.com/search"
                 params = {
                     "query": query,
@@ -307,9 +308,11 @@ class JobScraper:
             elif isinstance(result, Exception):
                 print(f"  Source error: {result}")
 
-        # Filter by salary if specified
+        # Filter by salary if specified (keep jobs with no salary listed)
         if salary_min:
-            all_jobs = [j for j in all_jobs if extract_salary(j.get('salary', '')) >= salary_min]
+            all_jobs = [j for j in all_jobs
+                        if extract_salary(j.get('salary', '')) >= salary_min
+                        or extract_salary(j.get('salary', '')) == 0]
 
         # Deduplicate by URL
         seen = set()
