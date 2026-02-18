@@ -314,6 +314,17 @@ class JobScraper:
                         if extract_salary(j.get('salary', '')) >= salary_min
                         or extract_salary(j.get('salary', '')) == 0]
 
+        # Strict title relevance filter — job title must contain at least one keyword
+        core_keywords = [kw.lower() for kw in keywords]
+        relevant_jobs = []
+        for job in all_jobs:
+            title = job.get('title', '').lower()
+            if any(kw in title for kw in core_keywords):
+                relevant_jobs.append(job)
+        if len(relevant_jobs) < len(all_jobs):
+            print(f"  🔍 Filtered {len(all_jobs)} → {len(relevant_jobs)} by title relevance")
+        all_jobs = relevant_jobs
+
         # Deduplicate by URL
         seen = set()
         unique_jobs = []
