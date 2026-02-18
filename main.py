@@ -27,14 +27,14 @@ JOB_PROFILES = [
         },
     },
     {
-        "name": "QA Engineer",
+        "name": "Quality Engineer",
         "chat_id": -5015437084,
         "filters": {
-            "keywords": ["QA Engineer"],
-            "location": "USA,Remote",
-            "salary_min": None,
-            "level": "Mid",
-            "job_type": ["Contract", "Full-time"],
+            "keywords": ["Quality Engineer", "CAPA", "Process Improvement", "Supply Quality", "Manufacturing Quality", "FMEA", "DMAIC", "Compliance"],
+            "location": "USA",
+            "salary_min": 85000,
+            "level": "Mid,Senior",
+            "job_type": ["Full-time"],
         },
     },
 ]
