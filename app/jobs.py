@@ -1,283 +1,339 @@
-"""Job scraping and search module."""
+"""Job scraping and search module — v2 with working APIs."""
 import aiohttp
 import asyncio
+import os
+import json
 from typing import List, Dict
 from datetime import datetime
 import re
-import xml.etree.ElementTree as ET
 from .db import add_job, get_filters
+
+
+# RapidAPI key for JSearch (LinkedIn/Indeed/Glassdoor aggregator)
+# Free tier: 500 requests/month — more than enough for daily searches
+RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY", "")
 
 
 class JobScraper:
     """Scrape jobs from multiple sources."""
 
-    async def search_indeed(self, keywords: List[str], location: str, job_type: str = None) -> List[Dict]:
-        """Search Indeed jobs."""
-        jobs = []
-        try:
-            # Indeed doesn't have official free API, so we use web scraping approach
-            # This is a simplified version - for production use Indeed API (paid) or their RSS feed
-            keyword_str = " ".join(keywords)
-            url = f"https://www.indeed.com/jobs?q={keyword_str}&l={location}&jt={'contract' if job_type == 'Contract' else 'fulltime'}"
-            
-            # Note: Indeed actively blocks scrapers, so this may not work
-            # Better approach: use Indeed's RSS feed or job listing APIs
-            jobs.append({
-                "title": f"{' '.join(keywords)} Position",
-                "company": "Indeed Job",
-                "location": location,
-                "salary": "Negotiable",
-                "job_type": job_type or "Full-time",
-                "source": "indeed",
-                "url": url,
-                "description": "View on Indeed"
-            })
-        except Exception as e:
-            print(f"Indeed search error: {e}")
-        
-        return jobs
-
+    # ─── 1. RemoteOK (free, no key needed) ───────────────────────
     async def search_remoteok(self, keywords: List[str], location: str = None) -> List[Dict]:
-        """Search RemoteOK jobs via API."""
+        """Search RemoteOK jobs via free public API."""
         jobs = []
         try:
-            # RemoteOK has a free public API
             async with aiohttp.ClientSession() as session:
                 url = "https://remoteok.com/api"
-                async with session.get(url, timeout=10) as resp:
+                headers = {"User-Agent": "JobBot/1.0"}
+                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     if resp.status == 200:
-                        data = await resp.json()
-                        for job in data[:50]:  # Get first 50
-                            if job.get('type') == 'job':
-                                title = job.get('title', '')
-                                # Filter by keywords
-                                if any(kw.lower() in title.lower() for kw in keywords):
-                                    jobs.append({
-                                        "title": title,
-                                        "company": job.get('company', 'N/A'),
-                                        "location": job.get('location', 'Remote'),
-                                        "salary": f"${job.get('salary_min', 'N/A')}-${job.get('salary_max', 'N/A')}",
-                                        "job_type": "Full-time",
-                                        "source": "remoteok",
-                                        "url": f"https://remoteok.com/remote-jobs/{job.get('id', '')}",
-                                        "description": job.get('description', '')[:200]
-                                    })
-        except Exception as e:
-            print(f"RemoteOK search error: {e}")
-        
-        return jobs
-
-    async def search_justjoinit(self, keywords: List[str], location: str = None) -> List[Dict]:
-        """Search JustJoinIt jobs via API."""
-        jobs = []
-        try:
-            # JustJoinIt has a public API
-            async with aiohttp.ClientSession() as session:
-                url = "https://api.justjoinit.eu/offers"
-                params = {
-                    "limit": 100,
-                    "sort_by": "publish_date",
-                    "order_by": "desc"
-                }
-                
-                async with session.get(url, params=params, timeout=10) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        for job in data.get('data', [])[:50]:
-                            title = job.get('title', '')
+                        data = await resp.json(content_type=None)
+                        for item in data:
+                            if not isinstance(item, dict) or 'position' not in item:
+                                continue
+                            title = item.get('position', '')
                             # Filter by keywords
-                            if any(kw.lower() in title.lower() for kw in keywords):
-                                # Filter by location if specified (USA or Remote)
-                                loc = job.get('city', 'Remote')
-                                if location and location.lower() == 'usa' and 'usa' not in loc.lower() and 'remote' not in loc.lower():
-                                    continue
-                                
-                                salary_range = "Negotiable"
-                                if job.get('salary_from'):
-                                    salary_range = f"${job.get('salary_from')}-${job.get('salary_to')}"
-                                
+                            if any(kw.lower() in title.lower() or
+                                   kw.lower() in ' '.join(item.get('tags', [])).lower()
+                                   for kw in keywords):
+                                salary = ""
+                                if item.get('salary_min') and item.get('salary_max'):
+                                    salary = f"${item['salary_min']:,} - ${item['salary_max']:,}"
+                                elif item.get('salary_min'):
+                                    salary = f"${item['salary_min']:,}+"
+                                else:
+                                    salary = "Not listed"
+
                                 jobs.append({
                                     "title": title,
-                                    "company": job.get('company_name', 'N/A'),
-                                    "location": loc,
-                                    "salary": salary_range,
+                                    "company": item.get('company', 'N/A'),
+                                    "location": item.get('location', 'Remote'),
+                                    "salary": salary,
                                     "job_type": "Full-time",
-                                    "source": "justjoinit",
-                                    "url": f"https://justjoinit.eu/jobs/{job.get('id', '')}",
-                                    "description": job.get('description', '')[:200]
+                                    "source": "RemoteOK",
+                                    "url": item.get('url', f"https://remoteok.com/remote-jobs/{item.get('slug', '')}"),
+                                    "description": (item.get('description', '') or '')[:200]
                                 })
+            print(f"  RemoteOK: found {len(jobs)} jobs")
         except Exception as e:
-            print(f"JustJoinIt search error: {e}")
-        
+            print(f"  RemoteOK error: {e}")
         return jobs
 
-    async def search_indeed(self, keywords: List[str], location: str = None) -> List[Dict]:
-        """Search Indeed via RSS feeds."""
+    # ─── 2. JSearch (RapidAPI) — LinkedIn + Indeed + Glassdoor ────
+    async def search_jsearch(self, keywords: List[str], location: str = None) -> List[Dict]:
+        """Search via JSearch API (aggregates LinkedIn, Indeed, Glassdoor).
+        Free tier: 500 requests/month.
+        Sign up: https://rapidapi.com/letscrape-6bRBa3QguO5/api/jsearch
+        """
+        jobs = []
+        if not RAPIDAPI_KEY:
+            print("  JSearch: skipped (no RAPIDAPI_KEY set)")
+            return jobs
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                query = f"{' '.join(keywords)} {location or 'remote'}"
+                url = "https://jsearch.p.rapidapi.com/search"
+                params = {
+                    "query": query,
+                    "page": "1",
+                    "num_pages": "1",
+                    "date_posted": "week",
+                    "remote_jobs_only": "true" if "remote" in (location or "").lower() else "false"
+                }
+                headers = {
+                    "X-RapidAPI-Key": RAPIDAPI_KEY,
+                    "X-RapidAPI-Host": "jsearch.p.rapidapi.com"
+                }
+
+                async with session.get(url, params=params, headers=headers,
+                                       timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        for item in data.get("data", []):
+                            salary = "Not listed"
+                            if item.get("job_min_salary") and item.get("job_max_salary"):
+                                salary = f"${int(item['job_min_salary']):,} - ${int(item['job_max_salary']):,}"
+                            elif item.get("job_min_salary"):
+                                salary = f"${int(item['job_min_salary']):,}+"
+
+                            source = "LinkedIn"
+                            publisher = (item.get("job_publisher") or "").lower()
+                            if "indeed" in publisher:
+                                source = "Indeed"
+                            elif "glassdoor" in publisher:
+                                source = "Glassdoor"
+                            elif "linkedin" in publisher:
+                                source = "LinkedIn"
+                            elif "ziprecruiter" in publisher:
+                                source = "ZipRecruiter"
+                            else:
+                                source = item.get("job_publisher", "JSearch")
+
+                            jobs.append({
+                                "title": item.get("job_title", "Job"),
+                                "company": item.get("employer_name", "N/A"),
+                                "location": item.get("job_city", "") + (", " + item.get("job_state", "") if item.get("job_state") else "") or "Remote",
+                                "salary": salary,
+                                "job_type": item.get("job_employment_type", "FULLTIME").replace("FULLTIME", "Full-time").replace("CONTRACTOR", "Contract").replace("PARTTIME", "Part-time"),
+                                "source": source,
+                                "url": item.get("job_apply_link") or item.get("job_google_link", ""),
+                                "description": (item.get("job_description", "") or "")[:200]
+                            })
+                    else:
+                        body = await resp.text()
+                        print(f"  JSearch: HTTP {resp.status} — {body[:200]}")
+            print(f"  JSearch (LinkedIn/Indeed/Glassdoor): found {len(jobs)} jobs")
+        except Exception as e:
+            print(f"  JSearch error: {e}")
+        return jobs
+
+    # ─── 3. Arbeitnow (free, no key needed) ──────────────────────
+    async def search_arbeitnow(self, keywords: List[str], location: str = None) -> List[Dict]:
+        """Search Arbeitnow free job API."""
         jobs = []
         try:
             async with aiohttp.ClientSession() as session:
-                keyword = keywords[0] if keywords else "Data Engineer"
-                # Indeed RSS feed format
-                url = f"https://www.indeed.com/rss?q={keyword}&l={location or 'Remote'}&filter=1"
-                
-                async with session.get(url, timeout=10) as resp:
+                url = "https://www.arbeitnow.com/api/job-board-api"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        for item in data.get("data", []):
+                            title = item.get("title", "")
+                            tags = " ".join(item.get("tags", []))
+                            # Filter by keywords
+                            if any(kw.lower() in title.lower() or kw.lower() in tags.lower()
+                                   for kw in keywords):
+                                jobs.append({
+                                    "title": title,
+                                    "company": item.get("company_name", "N/A"),
+                                    "location": item.get("location", "Remote"),
+                                    "salary": "Not listed",
+                                    "job_type": "Full-time" if not item.get("remote") else "Remote",
+                                    "source": "Arbeitnow",
+                                    "url": item.get("url", ""),
+                                    "description": (item.get("description", "") or "")[:200]
+                                })
+            print(f"  Arbeitnow: found {len(jobs)} jobs")
+        except Exception as e:
+            print(f"  Arbeitnow error: {e}")
+        return jobs
+
+    # ─── 4. LinkedIn public job search (no key, scraping) ────────
+    async def search_linkedin_public(self, keywords: List[str], location: str = None) -> List[Dict]:
+        """Scrape LinkedIn public job listings (no login required)."""
+        jobs = []
+        try:
+            async with aiohttp.ClientSession() as session:
+                keyword = "%20".join(keywords)
+                # LinkedIn public job search URL (no auth needed)
+                url = f"https://www.linkedin.com/jobs/search?keywords={keyword}&location={location or 'United States'}&f_WT=2&position=1&pageNum=0"
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                }
+                async with session.get(url, headers=headers,
+                                       timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    if resp.status == 200:
+                        html = await resp.text()
+                        # Parse job cards from HTML
+                        # LinkedIn public pages have structured data we can extract
+                        import re
+                        # Find job titles and links
+                        title_pattern = r'<a[^>]*class="[^"]*base-card__full-link[^"]*"[^>]*href="([^"]*)"[^>]*>\s*<span[^>]*>([^<]*)</span>'
+                        company_pattern = r'<h4[^>]*class="[^"]*base-search-card__subtitle[^"]*"[^>]*>\s*<a[^>]*>([^<]*)</a>'
+                        location_pattern = r'<span[^>]*class="[^"]*job-search-card__location[^"]*"[^>]*>([^<]*)</span>'
+
+                        titles = re.findall(title_pattern, html)
+                        companies = re.findall(company_pattern, html)
+                        locations = re.findall(location_pattern, html)
+
+                        for i, (link, title) in enumerate(titles[:15]):
+                            company = companies[i].strip() if i < len(companies) else "N/A"
+                            loc = locations[i].strip() if i < len(locations) else "Remote"
+                            jobs.append({
+                                "title": title.strip(),
+                                "company": company,
+                                "location": loc,
+                                "salary": "Not listed",
+                                "job_type": "Full-time",
+                                "source": "LinkedIn",
+                                "url": link.split("?")[0],  # Clean URL
+                                "description": ""
+                            })
+            print(f"  LinkedIn (public): found {len(jobs)} jobs")
+        except Exception as e:
+            print(f"  LinkedIn public error: {e}")
+        return jobs
+
+    # ─── 5. Indeed RSS Feed (free, no key) ───────────────────────
+    async def search_indeed_rss(self, keywords: List[str], location: str = None) -> List[Dict]:
+        """Search Indeed via RSS feed (free, no API key)."""
+        jobs = []
+        try:
+            import xml.etree.ElementTree as ET
+            async with aiohttp.ClientSession() as session:
+                keyword = "+".join(keywords)
+                loc = location.replace(",", "+") if location else "Remote"
+                url = f"https://www.indeed.com/rss?q={keyword}&l={loc}&sort=date&limit=20"
+                headers = {"User-Agent": "JobBot/1.0"}
+
+                async with session.get(url, headers=headers,
+                                       timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     if resp.status == 200:
                         content = await resp.text()
                         root = ET.fromstring(content)
-                        
-                        # Parse RSS items
-                        for item in root.findall('.//item')[:20]:
-                            title_elem = item.find('title')
-                            desc_elem = item.find('description')
-                            link_elem = item.find('link')
-                            
-                            if title_elem is not None and link_elem is not None:
-                                title = title_elem.text or "Job"
-                                link = link_elem.text or ""
-                                description = desc_elem.text or "" if desc_elem is not None else ""
-                                
-                                # Extract company name from description
+                        for item in root.findall('.//item'):
+                            title_el = item.find('title')
+                            link_el = item.find('link')
+                            desc_el = item.find('description')
+
+                            if title_el is not None and link_el is not None:
+                                title = title_el.text or ""
+                                link = link_el.text or ""
+                                desc = desc_el.text or "" if desc_el is not None else ""
+
+                                # Extract company from title (format: "Title - Company")
                                 company = "Indeed Job"
-                                if "Company" in description:
-                                    try:
-                                        company = description.split("Company")[1].split("<")[0].strip() or "Indeed Job"
-                                    except:
-                                        pass
-                                
+                                if " - " in title:
+                                    parts = title.rsplit(" - ", 1)
+                                    title = parts[0]
+                                    company = parts[1] if len(parts) > 1 else company
+
                                 jobs.append({
-                                    "title": title,
-                                    "company": company,
-                                    "location": location or "Remote",
-                                    "salary": "Negotiable",
+                                    "title": title.strip(),
+                                    "company": company.strip(),
+                                    "location": loc,
+                                    "salary": "Not listed",
                                     "job_type": "Full-time",
-                                    "source": "indeed",
+                                    "source": "Indeed",
                                     "url": link,
-                                    "description": description[:200]
+                                    "description": desc[:200]
                                 })
+            print(f"  Indeed RSS: found {len(jobs)} jobs")
         except Exception as e:
-            print(f"Indeed RSS error: {e}")
-        
+            print(f"  Indeed RSS error: {e}")
         return jobs
 
-    async def search_linkedin(self, keywords: List[str], location: str = None) -> List[Dict]:
-        """Search LinkedIn via RSS feeds (job board RSS)."""
+    # ─── 6. FindWork.dev (free API for dev jobs) ─────────────────
+    async def search_findwork(self, keywords: List[str], location: str = None) -> List[Dict]:
+        """Search FindWork.dev API (free, dev/data jobs)."""
         jobs = []
         try:
             async with aiohttp.ClientSession() as session:
-                keyword = keywords[0] if keywords else "Data Engineer"
-                # LinkedIn job board RSS
-                url = f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting?keywords={keyword}&location={location or 'Remote'}&count=20"
-                
-                async with session.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"}) as resp:
-                    if resp.status == 200:
-                        try:
-                            data = await resp.json()
-                            
-                            if "elements" in data:
-                                for job in data["elements"][:20]:
-                                    jobs.append({
-                                        "title": job.get("title", "Job"),
-                                        "company": job.get("companyName", "LinkedIn Job"),
-                                        "location": job.get("location", location or "Remote"),
-                                        "salary": job.get("salary", "Negotiable"),
-                                        "job_type": job.get("jobType", "Full-time"),
-                                        "source": "linkedin",
-                                        "url": job.get("applyUrl", "https://www.linkedin.com/jobs/"),
-                                        "description": job.get("description", "")[:200]
-                                    })
-                        except:
-                            # Fallback: if JSON parsing fails
-                            pass
-        except Exception as e:
-            print(f"LinkedIn search error: {e}")
-        
-        return jobs
+                keyword = " ".join(keywords)
+                url = f"https://findwork.dev/api/jobs/?search={keyword}&sort_by=relevance"
+                headers = {"User-Agent": "JobBot/1.0"}
 
-    async def search_himalayas(self, keywords: List[str], location: str = None) -> List[Dict]:
-        """Search Himalayas.app job board (free API)."""
-        jobs = []
-        try:
-            # Himalayas has a free job API
-            async with aiohttp.ClientSession() as session:
-                # Search for data engineering jobs
-                url = "https://api.thehimalayasapp.com/api/v1/roles/search"
-                params = {
-                    "q": "data engineer",
-                    "count": 20,
-                    "sort": "-date_posted"
-                }
-                
-                async with session.get(url, params=params, timeout=10) as resp:
+                async with session.get(url, headers=headers,
+                                       timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        for job in data.get('roles', [])[:15]:
-                            # Filter by location if specified
-                            job_loc = job.get('location', 'Remote').lower()
-                            if location and location.lower() == 'usa':
-                                if 'usa' not in job_loc and 'remote' not in job_loc and 'united states' not in job_loc:
-                                    continue
-                            
-                            salary = "Negotiable"
-                            if job.get('salary_min') and job.get('salary_max'):
-                                salary = f"${job.get('salary_min')}-${job.get('salary_max')}"
-                            elif job.get('salary_min'):
-                                salary = f"${job.get('salary_min')}+"
-                            
+                        for item in data.get("results", []):
                             jobs.append({
-                                "title": job.get('title', 'Data Engineer'),
-                                "company": job.get('company_name', 'N/A'),
-                                "location": job.get('location', 'Remote'),
-                                "salary": salary,
-                                "job_type": job.get('job_type', 'Full-time'),
-                                "source": "himalayas",
-                                "url": job.get('url', ''),
-                                "description": job.get('description', '')[:200]
+                                "title": item.get("role", "Job"),
+                                "company": item.get("company_name", "N/A"),
+                                "location": item.get("location", "Remote"),
+                                "salary": "Not listed",
+                                "job_type": item.get("employment_type", "Full-time"),
+                                "source": "FindWork",
+                                "url": item.get("url", ""),
+                                "description": (item.get("text", "") or "")[:200]
                             })
+            print(f"  FindWork: found {len(jobs)} jobs")
         except Exception as e:
-            print(f"Himalayas search error: {e}")
-        
+            print(f"  FindWork error: {e}")
         return jobs
 
-    async def search_all(self, keywords: List[str], location: str, salary_min: int = None, level: str = None, job_type: str = None) -> List[Dict]:
+    # ─── Orchestrator ────────────────────────────────────────────
+    async def search_all(self, keywords: List[str], location: str, salary_min: int = None,
+                         level: str = None, job_type: str = None) -> List[Dict]:
         """Search all sources concurrently."""
+        print("\n📡 Searching job sources...")
         tasks = [
             self.search_remoteok(keywords, location),
-            self.search_justjoinit(keywords, location),
-            self.search_himalayas(keywords, location),
-            self.search_indeed(keywords, location),
-            self.search_linkedin(keywords, location),
+            self.search_jsearch(keywords, location),
+            self.search_arbeitnow(keywords, location),
+            self.search_linkedin_public(keywords, location),
+            self.search_indeed_rss(keywords, location),
+            self.search_findwork(keywords, location),
         ]
-        
+
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        
+
         all_jobs = []
         for result in results:
             if isinstance(result, list):
                 all_jobs.extend(result)
-        
+            elif isinstance(result, Exception):
+                print(f"  Source error: {result}")
+
         # Filter by salary if specified
         if salary_min:
-            all_jobs = [j for j in all_jobs if j.get('salary') and extract_salary(j['salary']) >= salary_min]
-        
+            all_jobs = [j for j in all_jobs if extract_salary(j.get('salary', '')) >= salary_min]
+
         # Deduplicate by URL
         seen = set()
         unique_jobs = []
         for job in all_jobs:
-            if job['url'] not in seen:
-                seen.add(job['url'])
+            url = job.get('url', '')
+            if url and url not in seen:
+                seen.add(url)
                 unique_jobs.append(job)
-        
+
+        print(f"\n✅ Total unique jobs: {len(unique_jobs)}")
         return unique_jobs
 
 
 def extract_salary(salary_str: str) -> int:
     """Extract minimum salary from string."""
-    if not salary_str or salary_str == "Negotiable":
+    if not salary_str or salary_str in ("Negotiable", "Not listed", ""):
         return 0
-    
-    numbers = re.findall(r'\d+', salary_str.replace(',', ''))
+    numbers = re.findall(r'[\d,]+', salary_str.replace(',', ''))
     if numbers:
-        return int(numbers[0])
+        try:
+            return int(numbers[0])
+        except ValueError:
+            return 0
     return 0
 
 
@@ -286,7 +342,7 @@ async def search_jobs_for_user(user_id: int) -> List[Dict]:
     filters = get_filters(user_id)
     if not filters:
         return []
-    
+
     scraper = JobScraper()
     jobs = await scraper.search_all(
         keywords=filters['keywords'],
@@ -295,7 +351,7 @@ async def search_jobs_for_user(user_id: int) -> List[Dict]:
         level=filters.get('level'),
         job_type=filters.get('job_type')
     )
-    
+
     # Store jobs in database
     for job in jobs:
         add_job(
@@ -308,5 +364,5 @@ async def search_jobs_for_user(user_id: int) -> List[Dict]:
             url=job['url'],
             description=job.get('description')
         )
-    
+
     return jobs
