@@ -79,7 +79,7 @@ class JobScraper:
                     "query": query,
                     "page": "1",
                     "num_pages": "1",
-                    "date_posted": "week",
+                    "date_posted": "today",
                     "remote_jobs_only": "true" if "remote" in (location or "").lower() else "false"
                 }
                 headers = {
