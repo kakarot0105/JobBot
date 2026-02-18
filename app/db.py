@@ -74,12 +74,13 @@ def init_db():
         )
     """)
 
-    # Sent jobs (to avoid duplicates in telegram)
+    # Sent jobs (to avoid duplicates in telegram) — tracked per chat_id
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS sent_jobs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
             job_id INTEGER NOT NULL,
+            chat_id INTEGER,
             sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users(id),
             FOREIGN KEY (job_id) REFERENCES jobs(id)
@@ -161,32 +162,44 @@ def add_job(title: str, company: str, location: str, salary: str, job_type: str,
     return job_id
 
 
-def get_unsent_jobs(user_id: int, limit: int = 10) -> list:
-    """Get jobs not yet sent to user."""
+def get_unsent_jobs(user_id: int, chat_id: int = None, limit: int = 10) -> list:
+    """Get jobs not yet sent to a specific chat."""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT j.id, j.title, j.company, j.location, j.salary, j.job_type, j.source, j.url
         FROM jobs j
         WHERE j.id NOT IN (
-            SELECT job_id FROM sent_jobs WHERE user_id = ?
+            SELECT job_id FROM sent_jobs WHERE user_id = ? AND (chat_id = ? OR ? IS NULL)
         )
         ORDER BY j.scraped_at DESC
         LIMIT ?
-    """, (user_id, limit))
+    """, (user_id, chat_id, chat_id, limit))
     rows = cursor.fetchall()
     conn.close()
-    
     return [dict(row) for row in rows]
 
 
-def mark_sent(user_id: int, job_id: int):
-    """Mark job as sent to user."""
+def mark_sent(user_id: int, job_id: int, chat_id: int = None):
+    """Mark job as sent to a specific chat."""
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("INSERT INTO sent_jobs (user_id, job_id) VALUES (?, ?)", (user_id, job_id))
+    cursor.execute("INSERT INTO sent_jobs (user_id, job_id, chat_id) VALUES (?, ?, ?)", (user_id, job_id, chat_id))
     conn.commit()
     conn.close()
+
+
+def is_job_sent(url: str, chat_id: int) -> bool:
+    """Check if a job URL was already sent to a chat."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT 1 FROM sent_jobs s JOIN jobs j ON s.job_id = j.id
+        WHERE j.url = ? AND s.chat_id = ?
+    """, (url, chat_id))
+    result = cursor.fetchone()
+    conn.close()
+    return result is not None
 
 
 def mark_applied(user_id: int, job_id: int):

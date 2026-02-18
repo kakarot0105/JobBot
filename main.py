@@ -3,7 +3,7 @@
 import asyncio
 import os
 import sys
-from app.db import add_user, set_filters, add_job
+from app.db import add_user, set_filters, add_job, is_job_sent, mark_sent
 from app.jobs import JobScraper
 from app.telegram_bot import create_bot
 from app.mock_jobs import get_mock_jobs
@@ -43,13 +43,17 @@ JOB_PROFILES = [
 scraper = JobScraper()
 
 
-async def send_jobs_to_telegram(jobs: list, chat_id: int, profile_name: str):
-    """Send job list to a specific Telegram chat."""
+async def send_jobs_to_telegram(jobs: list, chat_id: int, profile_name: str, user_id: int):
+    """Send only NEW jobs to a specific Telegram chat."""
     if not TELEGRAM_TOKEN or not jobs:
-        return
+        return 0
+    sent = 0
     try:
         bot = Bot(token=TELEGRAM_TOKEN)
-        for job in jobs[:10]:
+        for job in jobs:
+            # Skip already-sent jobs
+            if is_job_sent(job['url'], chat_id):
+                continue
             msg = f"""
 💼 **{job['title']}**
 🏢 {job['company']}
@@ -60,15 +64,31 @@ async def send_jobs_to_telegram(jobs: list, chat_id: int, profile_name: str):
 [Apply Here]({job['url']})
 """
             await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+            # Store in DB and mark as sent
+            job_id = add_job(
+                title=job['title'], company=job['company'], location=job['location'],
+                salary=job['salary'], job_type=job['job_type'], source=job['source'],
+                url=job['url'], description=job.get('description')
+            )
+            mark_sent(user_id, job_id, chat_id)
+            sent += 1
             await asyncio.sleep(0.5)
-        print(f"  📨 Sent {min(10, len(jobs))} jobs to [{profile_name}] group!")
+            if sent >= 10:
+                break
+        if sent:
+            print(f"  📨 Sent {sent} NEW jobs to [{profile_name}]!")
+        else:
+            print(f"  ✅ No new jobs for [{profile_name}] (all already sent)")
     except Exception as e:
         print(f"  ⚠️  Telegram error for [{profile_name}]: {e}")
+    return sent
 
 
 async def daily_search(use_mock: bool = False, send_telegram: bool = True):
     """Run daily job search across all profiles."""
     print("\n🔍 Starting daily job search...")
+
+    user_id = add_user(DEFAULT_USER_TELEGRAM_ID, "banna")
 
     for profile in JOB_PROFILES:
         name = profile["name"]
@@ -92,7 +112,7 @@ async def daily_search(use_mock: bool = False, send_telegram: bool = True):
             print(f"  ✅ Found {len(jobs)} jobs")
 
             if send_telegram:
-                await send_jobs_to_telegram(jobs, chat_id, name)
+                await send_jobs_to_telegram(jobs, chat_id, name, user_id)
 
             for i, job in enumerate(jobs[:10]):
                 print(f"  {i+1}. {job['title']} @ {job['company']}")
