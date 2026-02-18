@@ -11,7 +11,7 @@ from .db import add_job, get_filters
 
 # RapidAPI key for JSearch (LinkedIn/Indeed/Glassdoor aggregator)
 # Free tier: 500 requests/month — more than enough for daily searches
-RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY", "")
+RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY", "2674038040msh80b5aa28db6af96p12a98fjsna87eb2ecb093")
 
 
 class JobScraper:
