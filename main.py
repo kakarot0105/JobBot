@@ -19,11 +19,11 @@ JOB_PROFILES = [
         "name": "Data Engineer",
         "chat_id": -1003357441031,
         "filters": {
-            "keywords": ["Data Engineer"],
-            "location": "USA,Remote",
-            "salary_min": None,
-            "level": "Mid",
-            "job_type": ["Contract", "Full-time"],
+            "keywords": ["AWS Data Engineer", "Data Engineer", "Cloud Engineer", "AI Data Engineer", "Azure Data Engineer"],
+            "location": "USA",
+            "salary_min": 100000,
+            "level": "Mid,Senior",
+            "job_type": ["Full-time"],
         },
     },
     {
