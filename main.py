@@ -3,8 +3,8 @@
 import asyncio
 import os
 import sys
-from app.db import add_user, set_filters
-from app.jobs import search_jobs_for_user
+from app.db import add_user, set_filters, add_job
+from app.jobs import JobScraper
 from app.telegram_bot import create_bot
 from app.mock_jobs import get_mock_jobs
 from telegram import Bot
@@ -40,19 +40,7 @@ JOB_PROFILES = [
 ]
 
 
-async def setup_user_for_profile(profile: dict) -> int:
-    """Setup user with filters for a specific job profile."""
-    user_id = add_user(DEFAULT_USER_TELEGRAM_ID, "banna")
-    f = profile["filters"]
-    set_filters(
-        user_id,
-        keywords=f["keywords"],
-        location=f["location"],
-        salary_min=f.get("salary_min"),
-        level=f.get("level"),
-        job_type=f.get("job_type"),
-    )
-    return user_id
+scraper = JobScraper()
 
 
 async def send_jobs_to_telegram(jobs: list, chat_id: int, profile_name: str):
@@ -87,10 +75,15 @@ async def daily_search(use_mock: bool = False, send_telegram: bool = True):
         chat_id = profile["chat_id"]
         print(f"\n── {name} ──")
 
-        user_id = await setup_user_for_profile(profile)
-
+        f = profile["filters"]
         try:
-            jobs = await search_jobs_for_user(user_id)
+            jobs = await scraper.search_all(
+                keywords=f["keywords"],
+                location=f["location"],
+                salary_min=f.get("salary_min"),
+                level=f.get("level"),
+                job_type=f.get("job_type"),
+            )
 
             if not jobs and use_mock:
                 print("  ⚠️  External APIs unavailable — using mock data")

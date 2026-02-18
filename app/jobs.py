@@ -113,7 +113,7 @@ class JobScraper:
                             jobs.append({
                                 "title": item.get("job_title", "Job"),
                                 "company": item.get("employer_name", "N/A"),
-                                "location": item.get("job_city", "") + (", " + item.get("job_state", "") if item.get("job_state") else "") or "Remote",
+                                "location": ((item.get("job_city") or "") + (", " + item["job_state"] if item.get("job_state") else "")).strip(", ") or "Remote",
                                 "salary": salary,
                                 "job_type": item.get("job_employment_type", "FULLTIME").replace("FULLTIME", "Full-time").replace("CONTRACTOR", "Contract").replace("PARTTIME", "Part-time"),
                                 "source": source,
