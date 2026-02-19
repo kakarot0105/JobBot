@@ -4,7 +4,7 @@ import asyncio
 import os
 import json
 from typing import List, Dict
-from datetime import datetime
+from datetime import datetime, timezone
 import re
 from .db import add_job, get_filters
 
@@ -24,6 +24,9 @@ JOB_TYPE_KEYWORDS = {
     "contract": ["contract", "contractor", "c2c", "1099"],
     "part-time": ["part-time", "part time"],
 }
+
+MAX_AGE_DAYS = int(os.getenv("JOB_MAX_AGE_DAYS", "7"))
+STRICT_DATES = os.getenv("JOB_STRICT_DATES", "false").lower() == "true"
 
 
 def normalize_job_type(job_type: str) -> str:
@@ -58,6 +61,30 @@ def location_match(job_location: str, target: str) -> bool:
     return tgt in loc
 
 
+def parse_date(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        # ISO 8601
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except Exception:
+        pass
+    for fmt in ("%a, %d %b %Y %H:%M:%S %z", "%Y-%m-%d", "%Y-%m-%dT%H:%M:%S%z"):
+        try:
+            return datetime.strptime(value, fmt)
+        except Exception:
+            continue
+    return None
+
+
+def is_recent(posted_at: datetime | None) -> bool:
+    if not posted_at:
+        return not STRICT_DATES
+    now = datetime.now(timezone.utc)
+    delta = now - posted_at.astimezone(timezone.utc)
+    return delta.days <= MAX_AGE_DAYS
+
+
 def filter_jobs(jobs: List[Dict], keywords: List[str], location: str, level: str = None, job_type: List[str] | str = None) -> List[Dict]:
     core_keywords = [kw.lower() for kw in keywords]
     levels = [l.strip().lower() for l in level.split(",")] if level else []
@@ -79,6 +106,8 @@ def filter_jobs(jobs: List[Dict], keywords: List[str], location: str, level: str
             normalized = normalize_job_type(job.get("job_type", ""))
             if normalized != "unknown" and normalized not in types:
                 continue
+        if not is_recent(job.get("posted_at")):
+            continue
         filtered.append(job)
     return filtered
 
@@ -137,7 +166,8 @@ class JobScraper:
                                     "job_type": "Full-time",
                                     "source": "RemoteOK",
                                     "url": item.get('url', f"https://remoteok.com/remote-jobs/{item.get('slug', '')}"),
-                                    "description": (item.get('description', '') or '')[:200]
+                                    "description": (item.get('description', '') or '')[:200],
+                                    "posted_at": parse_date(str(item.get('date') or item.get('epoch') or ""))
                                 })
             print(f"  RemoteOK: found {len(jobs)} jobs")
         except Exception as e:
@@ -204,7 +234,8 @@ class JobScraper:
                                 "job_type": item.get("job_employment_type", "FULLTIME").replace("FULLTIME", "Full-time").replace("CONTRACTOR", "Contract").replace("PARTTIME", "Part-time"),
                                 "source": source,
                                 "url": item.get("job_apply_link") or item.get("job_google_link", ""),
-                                "description": (item.get("job_description", "") or "")[:200]
+                                "description": (item.get("job_description", "") or "")[:200],
+                                "posted_at": parse_date(item.get("job_posted_at_datetime_utc"))
                             })
                     else:
                         body = await resp.text()
@@ -238,7 +269,8 @@ class JobScraper:
                                     "job_type": "Full-time" if not item.get("remote") else "Remote",
                                     "source": "Arbeitnow",
                                     "url": item.get("url", ""),
-                                    "description": (item.get("description", "") or "")[:200]
+                                    "description": (item.get("description", "") or "")[:200],
+                                    "posted_at": parse_date(item.get("created_at"))
                                 })
             print(f"  Arbeitnow: found {len(jobs)} jobs")
         except Exception as e:
@@ -325,6 +357,7 @@ class JobScraper:
                                     title = parts[0]
                                     company = parts[1] if len(parts) > 1 else company
 
+                                pub_date = item.find('pubDate')
                                 jobs.append({
                                     "title": title.strip(),
                                     "company": company.strip(),
@@ -333,7 +366,8 @@ class JobScraper:
                                     "job_type": "Full-time",
                                     "source": "Indeed",
                                     "url": link,
-                                    "description": desc[:200]
+                                    "description": desc[:200],
+                                    "posted_at": parse_date(pub_date.text if pub_date is not None else None)
                                 })
             print(f"  Indeed RSS: found {len(jobs)} jobs")
         except Exception as e:
@@ -363,7 +397,8 @@ class JobScraper:
                                 "job_type": item.get("employment_type", "Full-time"),
                                 "source": "FindWork",
                                 "url": item.get("url", ""),
-                                "description": (item.get("text", "") or "")[:200]
+                                "description": (item.get("text", "") or "")[:200],
+                                "posted_at": parse_date(item.get("date_posted"))
                             })
             print(f"  FindWork: found {len(jobs)} jobs")
         except Exception as e:
@@ -391,7 +426,8 @@ class JobScraper:
                                     "job_type": item.get("job_type", "Full-time"),
                                     "source": "Remotive",
                                     "url": item.get("url", ""),
-                                    "description": (item.get("description", "") or "")[:200]
+                                    "description": (item.get("description", "") or "")[:200],
+                                    "posted_at": parse_date(item.get("publication_date"))
                                 })
             print(f"  Remotive: found {len(jobs)} jobs")
         except Exception as e:
@@ -418,6 +454,7 @@ class JobScraper:
                             desc_el = item.find('description')
                             title = title_el.text if title_el is not None else ""
                             if any(kw.lower() in (title or "").lower() for kw in keywords):
+                                pub_date = item.find('pubDate')
                                 jobs.append({
                                     "title": title,
                                     "company": "WeWorkRemotely",
@@ -426,7 +463,8 @@ class JobScraper:
                                     "job_type": "Full-time",
                                     "source": "WeWorkRemotely",
                                     "url": link_el.text if link_el is not None else "",
-                                    "description": (desc_el.text or "")[:200] if desc_el is not None else ""
+                                    "description": (desc_el.text or "")[:200] if desc_el is not None else "",
+                                    "posted_at": parse_date(pub_date.text if pub_date is not None else None)
                                 })
             print(f"  WeWorkRemotely: found {len(jobs)} jobs")
         except Exception as e:
