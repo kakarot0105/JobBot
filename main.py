@@ -121,7 +121,7 @@ async def daily_search(use_mock: bool = False, send_telegram: bool = True):
             print(f"  ❌ Error: {e}")
 
 
-async def main():
+def main():
     """Main entry point."""
     run_mode = os.getenv("RUN_MODE", "").lower()
     if run_mode == "search":
@@ -130,27 +130,23 @@ async def main():
         if run_once and has_run_today("search"):
             print("✅ RUN_MODE=search already executed today. Skipping.")
             return
-        await daily_search(use_mock=use_mock, send_telegram=True)
+        asyncio.run(daily_search(use_mock=use_mock, send_telegram=True))
         if run_once:
             mark_run("search")
         return
 
     if len(sys.argv) > 1:
         if sys.argv[1] == "search":
-            # Run job search (production - send to Telegram)
             use_mock = "--mock" in sys.argv
-            await daily_search(use_mock=use_mock, send_telegram=True)
+            asyncio.run(daily_search(use_mock=use_mock, send_telegram=True))
         elif sys.argv[1] == "test":
-            # Run with mock data for testing (no Telegram)
-            await daily_search(use_mock=True, send_telegram=False)
+            asyncio.run(daily_search(use_mock=True, send_telegram=False))
         elif sys.argv[1] == "telegram":
-            # Run Telegram bot
             print("🤖 Starting Telegram bot...")
             app = create_bot()
-            await app.run_polling()
+            app.run_polling()
         elif sys.argv[1] == "setup":
-            # Setup user
-            await setup_user()
+            asyncio.run(setup_user())
         else:
             print("Usage:")
             print("  python main.py search        - Run job search (sends to Telegram)")
@@ -159,19 +155,13 @@ async def main():
             print("  python main.py telegram      - Start Telegram bot")
             print("  python main.py setup         - Setup default user")
     else:
-        # Default: run both
         print("JobBot - Automated Job Search")
         print("=" * 40)
-        
-        # Setup user
-        await setup_user()
-        
-        # Search jobs (with mock fallback, send to Telegram)
-        await daily_search(use_mock=True, send_telegram=True)
-        
+        asyncio.run(setup_user())
+        asyncio.run(daily_search(use_mock=True, send_telegram=True))
         print("\n" + "=" * 40)
         print("To use Telegram bot, run: python main.py telegram")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
