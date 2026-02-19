@@ -87,6 +87,15 @@ def init_db():
         )
     """)
 
+    # Run tracker (avoid duplicate RUN_MODE=search on redeploy)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS jobbot_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mode TEXT NOT NULL,
+            run_date TEXT NOT NULL
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -207,6 +216,25 @@ def mark_applied(user_id: int, job_id: int):
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("INSERT INTO applied_jobs (user_id, job_id) VALUES (?, ?)", (user_id, job_id))
+    conn.commit()
+    conn.close()
+
+
+def has_run_today(mode: str) -> bool:
+    conn = get_connection()
+    cursor = conn.cursor()
+    today = datetime.utcnow().date().isoformat()
+    cursor.execute("SELECT 1 FROM jobbot_runs WHERE mode = ? AND run_date = ?", (mode, today))
+    result = cursor.fetchone()
+    conn.close()
+    return result is not None
+
+
+def mark_run(mode: str):
+    conn = get_connection()
+    cursor = conn.cursor()
+    today = datetime.utcnow().date().isoformat()
+    cursor.execute("INSERT INTO jobbot_runs (mode, run_date) VALUES (?, ?)", (mode, today))
     conn.commit()
     conn.close()
 

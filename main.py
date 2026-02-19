@@ -3,7 +3,7 @@
 import asyncio
 import os
 import sys
-from app.db import add_user, set_filters, add_job, is_job_sent, mark_sent
+from app.db import add_user, set_filters, add_job, is_job_sent, mark_sent, has_run_today, mark_run
 from app.jobs import JobScraper
 from app.telegram_bot import create_bot
 from app.mock_jobs import get_mock_jobs
@@ -126,7 +126,13 @@ async def main():
     run_mode = os.getenv("RUN_MODE", "").lower()
     if run_mode == "search":
         use_mock = os.getenv("RUN_MOCK", "false").lower() == "true"
+        run_once = os.getenv("RUN_ONCE", "true").lower() == "true"
+        if run_once and has_run_today("search"):
+            print("✅ RUN_MODE=search already executed today. Skipping.")
+            return
         await daily_search(use_mock=use_mock, send_telegram=True)
+        if run_once:
+            mark_run("search")
         return
 
     if len(sys.argv) > 1:
