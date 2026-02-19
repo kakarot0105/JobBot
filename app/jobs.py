@@ -13,6 +13,91 @@ from .db import add_job, get_filters
 # Free tier: 500 requests/month — more than enough for daily searches
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY", "2674038040msh80b5aa28db6af96p12a98fjsna87eb2ecb093")
 
+LEVEL_KEYWORDS = {
+    "junior": ["junior", "jr", "entry"],
+    "mid": ["mid", "intermediate", "ii"],
+    "senior": ["senior", "sr", "lead", "principal", "staff"],
+}
+
+JOB_TYPE_KEYWORDS = {
+    "full-time": ["full-time", "full time", "fulltime"],
+    "contract": ["contract", "contractor", "c2c", "1099"],
+    "part-time": ["part-time", "part time"],
+}
+
+
+def normalize_job_type(job_type: str) -> str:
+    if not job_type:
+        return "unknown"
+    jt = job_type.lower()
+    for label, kws in JOB_TYPE_KEYWORDS.items():
+        if any(k in jt for k in kws):
+            return label
+    return "unknown"
+
+
+def detect_level(text: str) -> str:
+    if not text:
+        return "unknown"
+    t = text.lower()
+    for level, kws in LEVEL_KEYWORDS.items():
+        if any(k in t for k in kws):
+            return level
+    return "unknown"
+
+
+def location_match(job_location: str, target: str) -> bool:
+    if not target:
+        return True
+    loc = (job_location or "").lower()
+    tgt = target.lower()
+    if "remote" in tgt:
+        return "remote" in loc or "anywhere" in loc
+    if "usa" in tgt or "united states" in tgt:
+        return "united states" in loc or "usa" in loc or "us" in loc or "remote" in loc
+    return tgt in loc
+
+
+def filter_jobs(jobs: List[Dict], keywords: List[str], location: str, level: str = None, job_type: List[str] | str = None) -> List[Dict]:
+    core_keywords = [kw.lower() for kw in keywords]
+    levels = [l.strip().lower() for l in level.split(",")] if level else []
+    types = [t.strip().lower() for t in (job_type if isinstance(job_type, list) else [job_type] if job_type else [])]
+
+    filtered = []
+    for job in jobs:
+        title = job.get("title", "").lower()
+        desc = (job.get("description") or "").lower()
+        if not any(kw in title or kw in desc for kw in core_keywords):
+            continue
+        if location and not location_match(job.get("location", ""), location):
+            continue
+        if levels:
+            detected = detect_level(title + " " + desc)
+            if detected != "unknown" and detected not in levels:
+                continue
+        if types:
+            normalized = normalize_job_type(job.get("job_type", ""))
+            if normalized != "unknown" and normalized not in types:
+                continue
+        filtered.append(job)
+    return filtered
+
+
+def score_job(job: Dict, keywords: List[str]) -> float:
+    title = (job.get("title") or "").lower()
+    desc = (job.get("description") or "").lower()
+    score = 0
+    for kw in keywords:
+        if kw.lower() in title:
+            score += 2
+        if kw.lower() in desc:
+            score += 1
+    if "remote" in (job.get("location") or "").lower():
+        score += 1
+    if extract_salary(job.get("salary", "")) > 0:
+        score += 0.5
+    return score
+
 
 class JobScraper:
     """Scrape jobs from multiple sources."""
@@ -285,6 +370,69 @@ class JobScraper:
             print(f"  FindWork error: {e}")
         return jobs
 
+    # ─── 7. Remotive (free API) ───────────────────────────────────
+    async def search_remotive(self, keywords: List[str], location: str = None) -> List[Dict]:
+        """Search Remotive API (remote jobs)."""
+        jobs = []
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = "https://remotive.com/api/remote-jobs"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        for item in data.get("jobs", []):
+                            title = item.get("title", "")
+                            if any(kw.lower() in title.lower() for kw in keywords):
+                                jobs.append({
+                                    "title": title,
+                                    "company": item.get("company_name", "N/A"),
+                                    "location": item.get("candidate_required_location", "Remote"),
+                                    "salary": item.get("salary", "Not listed") or "Not listed",
+                                    "job_type": item.get("job_type", "Full-time"),
+                                    "source": "Remotive",
+                                    "url": item.get("url", ""),
+                                    "description": (item.get("description", "") or "")[:200]
+                                })
+            print(f"  Remotive: found {len(jobs)} jobs")
+        except Exception as e:
+            print(f"  Remotive error: {e}")
+        return jobs
+
+    # ─── 8. WeWorkRemotely RSS (free) ─────────────────────────────
+    async def search_weworkremotely(self, keywords: List[str], location: str = None) -> List[Dict]:
+        """Search WeWorkRemotely RSS feed for data jobs."""
+        jobs = []
+        try:
+            import xml.etree.ElementTree as ET
+            async with aiohttp.ClientSession() as session:
+                url = "https://weworkremotely.com/categories/remote-data-science/jobs.rss"
+                headers = {"User-Agent": "JobBot/1.0"}
+                async with session.get(url, headers=headers,
+                                       timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    if resp.status == 200:
+                        content = await resp.text()
+                        root = ET.fromstring(content)
+                        for item in root.findall('.//item'):
+                            title_el = item.find('title')
+                            link_el = item.find('link')
+                            desc_el = item.find('description')
+                            title = title_el.text if title_el is not None else ""
+                            if any(kw.lower() in (title or "").lower() for kw in keywords):
+                                jobs.append({
+                                    "title": title,
+                                    "company": "WeWorkRemotely",
+                                    "location": "Remote",
+                                    "salary": "Not listed",
+                                    "job_type": "Full-time",
+                                    "source": "WeWorkRemotely",
+                                    "url": link_el.text if link_el is not None else "",
+                                    "description": (desc_el.text or "")[:200] if desc_el is not None else ""
+                                })
+            print(f"  WeWorkRemotely: found {len(jobs)} jobs")
+        except Exception as e:
+            print(f"  WeWorkRemotely error: {e}")
+        return jobs
+
     # ─── Orchestrator ────────────────────────────────────────────
     async def search_all(self, keywords: List[str], location: str, salary_min: int = None,
                          level: str = None, job_type: str = None) -> List[Dict]:
@@ -297,6 +445,8 @@ class JobScraper:
             self.search_linkedin_public(keywords, location),
             self.search_indeed_rss(keywords, location),
             self.search_findwork(keywords, location),
+            self.search_remotive(keywords, location),
+            self.search_weworkremotely(keywords, location),
         ]
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -314,16 +464,11 @@ class JobScraper:
                         if extract_salary(j.get('salary', '')) >= salary_min
                         or extract_salary(j.get('salary', '')) == 0]
 
-        # Strict title relevance filter — job title must contain at least one keyword
-        core_keywords = [kw.lower() for kw in keywords]
-        relevant_jobs = []
-        for job in all_jobs:
-            title = job.get('title', '').lower()
-            if any(kw in title for kw in core_keywords):
-                relevant_jobs.append(job)
-        if len(relevant_jobs) < len(all_jobs):
-            print(f"  🔍 Filtered {len(all_jobs)} → {len(relevant_jobs)} by title relevance")
-        all_jobs = relevant_jobs
+        # Apply smarter filters: keywords, location, level, job_type
+        filtered = filter_jobs(all_jobs, keywords, location, level, job_type)
+        if len(filtered) < len(all_jobs):
+            print(f"  🔍 Filtered {len(all_jobs)} → {len(filtered)} by relevance/location/type")
+        all_jobs = filtered
 
         # Deduplicate by URL
         seen = set()
@@ -333,6 +478,9 @@ class JobScraper:
             if url and url not in seen:
                 seen.add(url)
                 unique_jobs.append(job)
+
+        # Score & sort
+        unique_jobs.sort(key=lambda j: score_job(j, keywords), reverse=True)
 
         print(f"\n✅ Total unique jobs: {len(unique_jobs)}")
         return unique_jobs
