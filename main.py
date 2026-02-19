@@ -123,6 +123,12 @@ async def daily_search(use_mock: bool = False, send_telegram: bool = True):
 
 async def main():
     """Main entry point."""
+    run_mode = os.getenv("RUN_MODE", "").lower()
+    if run_mode == "search":
+        use_mock = os.getenv("RUN_MOCK", "false").lower() == "true"
+        await daily_search(use_mock=use_mock, send_telegram=True)
+        return
+
     if len(sys.argv) > 1:
         if sys.argv[1] == "search":
             # Run job search (production - send to Telegram)
