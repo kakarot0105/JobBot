@@ -225,6 +225,7 @@ def create_bot():
             SETTING_TYPE: [CommandHandler("cancel", lambda u, c: ConversationHandler.END)],
         },
         fallbacks=[],
+        per_message=True,
     )
     
     # Callback handler
