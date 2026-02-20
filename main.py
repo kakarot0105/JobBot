@@ -30,11 +30,23 @@ JOB_PROFILES = [
         "name": "Quality Engineer",
         "chat_id": -5015437084,
         "filters": {
-            "keywords": ["Quality Engineer", "CAPA", "Process Improvement", "Supply Quality", "Manufacturing Quality", "FMEA", "DMAIC", "Compliance"],
+            "keywords": [
+                "Quality Inspector",
+                "Quality Technician",
+                "Quality Associate",
+                "Warehouse Quality",
+                "Inventory Quality",
+                "Receiving Inspection",
+                "QC",
+                "QA",
+                "Quality Control",
+                "Warehouse Supervisor",
+                "Logistics Quality"
+            ],
             "location": "USA",
-            "salary_min": 85000,
-            "level": "Mid,Senior",
-            "job_type": ["Full-time"],
+            "salary_min": 0,
+            "level": "",
+            "job_type": ["Full-time", "Contract"],
         },
     },
 ]
