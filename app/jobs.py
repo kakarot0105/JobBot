@@ -25,7 +25,7 @@ JOB_TYPE_KEYWORDS = {
     "part-time": ["part-time", "part time"],
 }
 
-MAX_AGE_DAYS = int(os.getenv("JOB_MAX_AGE_DAYS", "7"))
+MAX_AGE_DAYS = int(os.getenv("JOB_MAX_AGE_DAYS", "3"))
 STRICT_DATES = os.getenv("JOB_STRICT_DATES", "false").lower() == "true"
 
 

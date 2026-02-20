@@ -9,7 +9,7 @@
   "jobs": [
     {
       "name": "daily-job-search",
-      "schedule": "0 14 * * *",
+      "schedule": "0 14 * * 1-5",
       "command": "python main.py search"
     }
   ]
