@@ -4,13 +4,6 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "python main.py telegram"
-  },
-  "jobs": [
-    {
-      "name": "daily-job-search",
-      "schedule": "0 13,18 * * 1-5",
-      "command": "python main.py search"
-    }
-  ]
+    "startCommand": "python main.py search"
+  }
 }
