@@ -13,6 +13,7 @@ from urllib.parse import quote_plus
 # RapidAPI key for JSearch (LinkedIn/Indeed/Glassdoor aggregator)
 # Free tier: 500 requests/month — more than enough for daily searches
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY", "2674038040msh80b5aa28db6af96p12a98fjsna87eb2ecb093")
+APIFY_TOKEN = os.getenv("APIFY_TOKEN", "")
 
 LEVEL_KEYWORDS = {
     "junior": ["junior", "jr", "entry"],
@@ -127,6 +128,28 @@ def score_job(job: Dict, keywords: List[str]) -> float:
     if extract_salary(job.get("salary", "")) > 0:
         score += 0.5
     return score
+
+
+async def run_apify_actor(actor_id: str, input_payload: dict) -> list[dict]:
+    if not APIFY_TOKEN:
+        return []
+    try:
+        async with aiohttp.ClientSession() as session:
+            run_url = f"https://api.apify.com/v2/acts/{actor_id}/runs?token={APIFY_TOKEN}"
+            async with session.post(run_url, json=input_payload, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                if resp.status not in (200, 201):
+                    return []
+                run_data = await resp.json()
+                dataset_id = run_data.get("data", {}).get("defaultDatasetId")
+            if not dataset_id:
+                return []
+            items_url = f"https://api.apify.com/v2/datasets/{dataset_id}/items?format=json&clean=1"
+            async with session.get(items_url, timeout=aiohttp.ClientTimeout(total=30)) as items_resp:
+                if items_resp.status != 200:
+                    return []
+                return await items_resp.json()
+    except Exception:
+        return []
 
 
 class JobScraper:
@@ -609,6 +632,92 @@ class JobScraper:
             print(f"  Levels.fyi error: {e}")
         return jobs
 
+    # ─── 13. Apify (LinkedIn/Glassdoor/Google Jobs) ────────────────
+    async def search_apify_linkedin(self, keywords: List[str], location: str = None) -> List[Dict]:
+        jobs = []
+        items = await run_apify_actor(
+            "curious_coder/linkedin-jobs-search-scraper",
+            {
+                "queries": [f"{keywords[0]} {location or 'United States'}"],
+                "maxPages": 1,
+            },
+        )
+        for item in items:
+            title = item.get("title") or item.get("jobTitle") or ""
+            if not any(kw.lower() in title.lower() for kw in keywords):
+                continue
+            jobs.append({
+                "title": title,
+                "company": item.get("companyName") or item.get("company") or "N/A",
+                "location": item.get("location") or "Remote",
+                "salary": item.get("salary") or "Not listed",
+                "job_type": item.get("employmentType") or "Full-time",
+                "source": "Apify LinkedIn",
+                "url": item.get("url") or item.get("jobUrl") or "",
+                "description": (item.get("description") or "")[:200],
+                "posted_at": parse_date(item.get("postedAt"))
+            })
+        if jobs:
+            print(f"  Apify LinkedIn: found {len(jobs)} jobs")
+        return jobs
+
+    async def search_apify_glassdoor(self, keywords: List[str], location: str = None) -> List[Dict]:
+        jobs = []
+        items = await run_apify_actor(
+            "radeance/glassdoor-jobs-scraper",
+            {
+                "query": keywords[0],
+                "location": location or "United States",
+                "maxItems": 50,
+            },
+        )
+        for item in items:
+            title = item.get("jobTitle") or item.get("title") or ""
+            if not any(kw.lower() in title.lower() for kw in keywords):
+                continue
+            jobs.append({
+                "title": title,
+                "company": item.get("companyName") or item.get("company") or "N/A",
+                "location": item.get("location") or "Remote",
+                "salary": item.get("salary") or "Not listed",
+                "job_type": item.get("jobType") or "Full-time",
+                "source": "Apify Glassdoor",
+                "url": item.get("jobUrl") or item.get("url") or "",
+                "description": (item.get("jobDescription") or "")[:200],
+                "posted_at": parse_date(item.get("postedAt"))
+            })
+        if jobs:
+            print(f"  Apify Glassdoor: found {len(jobs)} jobs")
+        return jobs
+
+    async def search_apify_googlejobs(self, keywords: List[str], location: str = None) -> List[Dict]:
+        jobs = []
+        items = await run_apify_actor(
+            "orgupdate/google-jobs-scraper",
+            {
+                "queries": [f"{keywords[0]} {location or 'United States'}"],
+                "maxItems": 50,
+            },
+        )
+        for item in items:
+            title = item.get("title") or item.get("jobTitle") or ""
+            if not any(kw.lower() in title.lower() for kw in keywords):
+                continue
+            jobs.append({
+                "title": title,
+                "company": item.get("company") or item.get("companyName") or "N/A",
+                "location": item.get("location") or "Remote",
+                "salary": item.get("salary") or "Not listed",
+                "job_type": item.get("employmentType") or "Full-time",
+                "source": "Apify Google Jobs",
+                "url": item.get("url") or "",
+                "description": (item.get("description") or "")[:200],
+                "posted_at": parse_date(item.get("postedAt"))
+            })
+        if jobs:
+            print(f"  Apify Google Jobs: found {len(jobs)} jobs")
+        return jobs
+
     # ─── Orchestrator ────────────────────────────────────────────
     async def search_all(self, keywords: List[str], location: str, salary_min: int = None,
                          level: str = None, job_type: str = None) -> List[Dict]:
@@ -627,6 +736,9 @@ class JobScraper:
             self.search_dice(keywords, location),
             self.search_builtin(keywords, location),
             self.search_levelsfyi(keywords, location),
+            self.search_apify_linkedin(keywords, location),
+            self.search_apify_glassdoor(keywords, location),
+            self.search_apify_googlejobs(keywords, location),
         ]
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
