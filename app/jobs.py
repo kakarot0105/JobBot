@@ -51,9 +51,11 @@ def detect_level(text: str) -> str:
     return "unknown"
 
 
-def location_match(job_location: str, target: str) -> bool:
+def location_match(job_location: str | list, target: str) -> bool:
     if not target:
         return True
+    if isinstance(job_location, list):
+        job_location = " ".join(job_location)
     loc = (job_location or "").lower()
     tgt = target.lower()
     if "remote" in tgt:
@@ -255,7 +257,7 @@ class JobScraper:
                                 "company": item.get("employer_name", "N/A"),
                                 "location": ((item.get("job_city") or "") + (", " + item["job_state"] if item.get("job_state") else "")).strip(", ") or "Remote",
                                 "salary": salary,
-                                "job_type": item.get("job_employment_type", "FULLTIME").replace("FULLTIME", "Full-time").replace("CONTRACTOR", "Contract").replace("PARTTIME", "Part-time"),
+                                "job_type": (item.get("job_employment_type") or "FULLTIME").replace("FULLTIME", "Full-time").replace("CONTRACTOR", "Contract").replace("PARTTIME", "Part-time"),
                                 "source": source,
                                 "url": item.get("job_apply_link") or item.get("job_google_link", ""),
                                 "description": (item.get("job_description", "") or "")[:200],
@@ -463,33 +465,23 @@ class JobScraper:
         """Search WeWorkRemotely RSS feed for data jobs."""
         jobs = []
         try:
-            import xml.etree.ElementTree as ET
-            async with aiohttp.ClientSession() as session:
-                url = "https://weworkremotely.com/categories/remote-data-science/jobs.rss"
-                headers = {"User-Agent": "JobBot/1.0"}
-                async with session.get(url, headers=headers,
-                                       timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                    if resp.status == 200:
-                        content = await resp.text()
-                        root = ET.fromstring(content)
-                        for item in root.findall('.//item'):
-                            title_el = item.find('title')
-                            link_el = item.find('link')
-                            desc_el = item.find('description')
-                            title = title_el.text if title_el is not None else ""
-                            if any(kw.lower() in (title or "").lower() for kw in keywords):
-                                pub_date = item.find('pubDate')
-                                jobs.append({
-                                    "title": title,
-                                    "company": "WeWorkRemotely",
-                                    "location": "Remote",
-                                    "salary": "Not listed",
-                                    "job_type": "Full-time",
-                                    "source": "WeWorkRemotely",
-                                    "url": link_el.text if link_el is not None else "",
-                                    "description": (desc_el.text or "")[:200] if desc_el is not None else "",
-                                    "posted_at": parse_date(pub_date.text if pub_date is not None else None)
-                                })
+            import feedparser
+            url = "https://weworkremotely.com/categories/remote-data-science/jobs.rss"
+            feed = feedparser.parse(url)
+            for entry in feed.entries:
+                title = entry.get("title", "")
+                if any(kw.lower() in (title or "").lower() for kw in keywords):
+                    jobs.append({
+                        "title": title,
+                        "company": "WeWorkRemotely",
+                        "location": "Remote",
+                        "salary": "Not listed",
+                        "job_type": "Full-time",
+                        "source": "WeWorkRemotely",
+                        "url": entry.get("link", ""),
+                        "description": (entry.get("summary", "") or "")[:200],
+                        "posted_at": parse_date(entry.get("published"))
+                    })
             print(f"  WeWorkRemotely: found {len(jobs)} jobs")
         except Exception as e:
             print(f"  WeWorkRemotely error: {e}")
@@ -602,31 +594,23 @@ class JobScraper:
     async def search_levelsfyi(self, keywords: List[str], location: str = None) -> List[Dict]:
         jobs = []
         try:
-            import xml.etree.ElementTree as ET
+            import feedparser
             url = "https://www.levels.fyi/jobs/rss"
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                    if resp.status == 200:
-                        content = await resp.text()
-                        root = ET.fromstring(content)
-                        for item in root.findall('.//item'):
-                            title_el = item.find('title')
-                            link_el = item.find('link')
-                            desc_el = item.find('description')
-                            pub_date = item.find('pubDate')
-                            title = title_el.text if title_el is not None else ""
-                            if any(kw.lower() in (title or "").lower() for kw in keywords):
-                                jobs.append({
-                                    "title": title,
-                                    "company": "Levels.fyi",
-                                    "location": "United States",
-                                    "salary": "Not listed",
-                                    "job_type": "Full-time",
-                                    "source": "Levels.fyi",
-                                    "url": link_el.text if link_el is not None else "",
-                                    "description": (desc_el.text or "")[:200] if desc_el is not None else "",
-                                    "posted_at": parse_date(pub_date.text if pub_date is not None else None)
-                                })
+            feed = feedparser.parse(url)
+            for entry in feed.entries:
+                title = entry.get("title", "")
+                if any(kw.lower() in (title or "").lower() for kw in keywords):
+                    jobs.append({
+                        "title": title,
+                        "company": "Levels.fyi",
+                        "location": "United States",
+                        "salary": "Not listed",
+                        "job_type": "Full-time",
+                        "source": "Levels.fyi",
+                        "url": entry.get("link", ""),
+                        "description": (entry.get("summary", "") or "")[:200],
+                        "posted_at": parse_date(entry.get("published"))
+                    })
             print(f"  Levels.fyi: found {len(jobs)} jobs")
         except Exception as e:
             print(f"  Levels.fyi error: {e}")
