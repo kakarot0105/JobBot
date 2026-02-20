@@ -7,6 +7,7 @@ from typing import List, Dict
 from datetime import datetime, timezone
 import re
 from .db import add_job, get_filters
+from urllib.parse import quote_plus
 
 
 # RapidAPI key for JSearch (LinkedIn/Indeed/Glassdoor aggregator)
@@ -504,6 +505,110 @@ class JobScraper:
             print(f"  Jobicy error: {e}")
         return jobs
 
+    # ─── 10. Dice RSS (free) ──────────────────────────────────────
+    async def search_dice(self, keywords: List[str], location: str = None) -> List[Dict]:
+        jobs = []
+        try:
+            import xml.etree.ElementTree as ET
+            query = quote_plus(" OR ".join(keywords))
+            loc = quote_plus(location or "Remote")
+            url = f"https://www.dice.com/jobs/rss?searchString={query}&location={loc}&countryCode=US"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    if resp.status == 200:
+                        content = await resp.text()
+                        root = ET.fromstring(content)
+                        for item in root.findall('.//item'):
+                            title_el = item.find('title')
+                            link_el = item.find('link')
+                            desc_el = item.find('description')
+                            pub_date = item.find('pubDate')
+                            title = title_el.text if title_el is not None else ""
+                            if any(kw.lower() in (title or "").lower() for kw in keywords):
+                                jobs.append({
+                                    "title": title,
+                                    "company": "Dice",
+                                    "location": location or "Remote",
+                                    "salary": "Not listed",
+                                    "job_type": "Full-time",
+                                    "source": "Dice",
+                                    "url": link_el.text if link_el is not None else "",
+                                    "description": (desc_el.text or "")[:200] if desc_el is not None else "",
+                                    "posted_at": parse_date(pub_date.text if pub_date is not None else None)
+                                })
+            print(f"  Dice: found {len(jobs)} jobs")
+        except Exception as e:
+            print(f"  Dice error: {e}")
+        return jobs
+
+    # ─── 11. BuiltIn RSS (free) ───────────────────────────────────
+    async def search_builtin(self, keywords: List[str], location: str = None) -> List[Dict]:
+        jobs = []
+        try:
+            import xml.etree.ElementTree as ET
+            url = "https://builtin.com/jobs.rss"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    if resp.status == 200:
+                        content = await resp.text()
+                        root = ET.fromstring(content)
+                        for item in root.findall('.//item'):
+                            title_el = item.find('title')
+                            link_el = item.find('link')
+                            desc_el = item.find('description')
+                            pub_date = item.find('pubDate')
+                            title = title_el.text if title_el is not None else ""
+                            if any(kw.lower() in (title or "").lower() for kw in keywords):
+                                jobs.append({
+                                    "title": title,
+                                    "company": "BuiltIn",
+                                    "location": "United States",
+                                    "salary": "Not listed",
+                                    "job_type": "Full-time",
+                                    "source": "BuiltIn",
+                                    "url": link_el.text if link_el is not None else "",
+                                    "description": (desc_el.text or "")[:200] if desc_el is not None else "",
+                                    "posted_at": parse_date(pub_date.text if pub_date is not None else None)
+                                })
+            print(f"  BuiltIn: found {len(jobs)} jobs")
+        except Exception as e:
+            print(f"  BuiltIn error: {e}")
+        return jobs
+
+    # ─── 12. Levels.fyi (best-effort RSS) ─────────────────────────
+    async def search_levelsfyi(self, keywords: List[str], location: str = None) -> List[Dict]:
+        jobs = []
+        try:
+            import xml.etree.ElementTree as ET
+            url = "https://www.levels.fyi/jobs/rss"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    if resp.status == 200:
+                        content = await resp.text()
+                        root = ET.fromstring(content)
+                        for item in root.findall('.//item'):
+                            title_el = item.find('title')
+                            link_el = item.find('link')
+                            desc_el = item.find('description')
+                            pub_date = item.find('pubDate')
+                            title = title_el.text if title_el is not None else ""
+                            if any(kw.lower() in (title or "").lower() for kw in keywords):
+                                jobs.append({
+                                    "title": title,
+                                    "company": "Levels.fyi",
+                                    "location": "United States",
+                                    "salary": "Not listed",
+                                    "job_type": "Full-time",
+                                    "source": "Levels.fyi",
+                                    "url": link_el.text if link_el is not None else "",
+                                    "description": (desc_el.text or "")[:200] if desc_el is not None else "",
+                                    "posted_at": parse_date(pub_date.text if pub_date is not None else None)
+                                })
+            print(f"  Levels.fyi: found {len(jobs)} jobs")
+        except Exception as e:
+            print(f"  Levels.fyi error: {e}")
+        return jobs
+
     # ─── Orchestrator ────────────────────────────────────────────
     async def search_all(self, keywords: List[str], location: str, salary_min: int = None,
                          level: str = None, job_type: str = None) -> List[Dict]:
@@ -519,6 +624,9 @@ class JobScraper:
             self.search_remotive(keywords, location),
             self.search_weworkremotely(keywords, location),
             self.search_jobicy(keywords, location),
+            self.search_dice(keywords, location),
+            self.search_builtin(keywords, location),
+            self.search_levelsfyi(keywords, location),
         ]
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
