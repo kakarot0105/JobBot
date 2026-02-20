@@ -130,6 +130,7 @@ def main():
         if run_once and has_run_today("search"):
             print("✅ RUN_MODE=search already executed today. Skipping.")
             return
+        print("[JobBot] RUN_MODE=search triggered")
         asyncio.run(daily_search(use_mock=use_mock, send_telegram=True))
         if run_once:
             mark_run("search")
