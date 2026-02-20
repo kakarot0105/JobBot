@@ -134,6 +134,7 @@ def score_job(job: Dict, keywords: List[str]) -> float:
 
 async def run_apify_actor(actor_id: str, input_payload: dict) -> list[dict]:
     if not APIFY_TOKEN:
+        print("  Apify: skipped (no APIFY_TOKEN set)")
         return []
     try:
         async with aiohttp.ClientSession() as session:
@@ -214,14 +215,15 @@ class JobScraper:
         try:
             async with aiohttp.ClientSession() as session:
                 # Use first keyword for cleaner API query
-                query = f"{keywords[0]} {location or 'remote'}"
+                loc_str = ", ".join(location) if isinstance(location, list) else (location or "")
+                query = f"{keywords[0]} {loc_str or 'remote'}"
                 url = "https://jsearch.p.rapidapi.com/search"
                 params = {
                     "query": query,
                     "page": "1",
                     "num_pages": "1",
                     "date_posted": "today",
-                    "remote_jobs_only": "true" if "remote" in (location or "").lower() else "false"
+                    "remote_jobs_only": "true" if "remote" in (loc_str).lower() else "false"
                 }
                 headers = {
                     "X-RapidAPI-Key": RAPIDAPI_KEY,
@@ -240,7 +242,10 @@ class JobScraper:
                                 salary = f"${int(item['job_min_salary']):,}+"
 
                             source = "LinkedIn"
-                            publisher = (item.get("job_publisher") or "").lower()
+                            publisher_raw = item.get("job_publisher") or ""
+                            if isinstance(publisher_raw, list):
+                                publisher_raw = " ".join(publisher_raw)
+                            publisher = str(publisher_raw).lower()
                             if "indeed" in publisher:
                                 source = "Indeed"
                             elif "glassdoor" in publisher:
@@ -250,7 +255,7 @@ class JobScraper:
                             elif "ziprecruiter" in publisher:
                                 source = "ZipRecruiter"
                             else:
-                                source = item.get("job_publisher", "JSearch")
+                                source = publisher_raw or "JSearch"
 
                             jobs.append({
                                 "title": item.get("job_title", "Job"),
