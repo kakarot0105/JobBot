@@ -136,6 +136,7 @@ async def run_apify_actor(actor_id: str, input_payload: dict) -> list[dict]:
     if not APIFY_TOKEN:
         print("  Apify: skipped (no APIFY_TOKEN set)")
         return []
+    print(f"  Apify: token_len={len(APIFY_TOKEN)}")
     try:
         async with aiohttp.ClientSession() as session:
             run_url = f"https://api.apify.com/v2/acts/{actor_id}/runs?token={APIFY_TOKEN}"
