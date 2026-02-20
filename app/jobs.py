@@ -471,6 +471,39 @@ class JobScraper:
             print(f"  WeWorkRemotely error: {e}")
         return jobs
 
+    # ─── 9. Jobicy (free API) ─────────────────────────────────────
+    async def search_jobicy(self, keywords: List[str], location: str = None) -> List[Dict]:
+        """Search Jobicy API for remote jobs."""
+        jobs = []
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = "https://jobicy.com/api/v2/remote-jobs"
+                params = {
+                    "count": 50,
+                    "tag": "data"  # broad data tag
+                }
+                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        for item in data.get("jobs", []):
+                            title = item.get("jobTitle", "")
+                            if any(kw.lower() in title.lower() for kw in keywords):
+                                jobs.append({
+                                    "title": title,
+                                    "company": item.get("companyName", "N/A"),
+                                    "location": item.get("jobGeo", "Remote"),
+                                    "salary": item.get("annualSalaryMin") and item.get("annualSalaryMax") and f"${item['annualSalaryMin']:,} - ${item['annualSalaryMax']:,}" or "Not listed",
+                                    "job_type": item.get("jobType", "Full-time"),
+                                    "source": "Jobicy",
+                                    "url": item.get("jobLink", ""),
+                                    "description": (item.get("jobDescription", "") or "")[:200],
+                                    "posted_at": parse_date(item.get("pubDate"))
+                                })
+            print(f"  Jobicy: found {len(jobs)} jobs")
+        except Exception as e:
+            print(f"  Jobicy error: {e}")
+        return jobs
+
     # ─── Orchestrator ────────────────────────────────────────────
     async def search_all(self, keywords: List[str], location: str, salary_min: int = None,
                          level: str = None, job_type: str = None) -> List[Dict]:
@@ -485,6 +518,7 @@ class JobScraper:
             self.search_findwork(keywords, location),
             self.search_remotive(keywords, location),
             self.search_weworkremotely(keywords, location),
+            self.search_jobicy(keywords, location),
         ]
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
