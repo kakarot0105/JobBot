@@ -4,17 +4,156 @@ import asyncio
 import os
 import json
 from typing import List, Dict
-from datetime import datetime
+from datetime import datetime, timezone
 import re
 from .db import add_job, get_filters
+from urllib.parse import quote_plus
 
 
 # RapidAPI key for JSearch (LinkedIn/Indeed/Glassdoor aggregator)
 # Free tier: 500 requests/month — more than enough for daily searches
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY", "2674038040msh80b5aa28db6af96p12a98fjsna87eb2ecb093")
-
-# Apify token for LinkedIn Job Scraper
 APIFY_TOKEN = os.getenv("APIFY_TOKEN", "")
+
+LEVEL_KEYWORDS = {
+    "junior": ["junior", "jr", "entry"],
+    "mid": ["mid", "intermediate", "ii"],
+    "senior": ["senior", "sr", "lead", "principal", "staff"],
+}
+
+JOB_TYPE_KEYWORDS = {
+    "full-time": ["full-time", "full time", "fulltime"],
+    "contract": ["contract", "contractor", "c2c", "1099"],
+    "part-time": ["part-time", "part time"],
+}
+
+MAX_AGE_DAYS = int(os.getenv("JOB_MAX_AGE_DAYS", "3"))
+STRICT_DATES = os.getenv("JOB_STRICT_DATES", "false").lower() == "true"
+
+
+def normalize_job_type(job_type: str) -> str:
+    if not job_type:
+        return "unknown"
+    jt = job_type.lower()
+    for label, kws in JOB_TYPE_KEYWORDS.items():
+        if any(k in jt for k in kws):
+            return label
+    return "unknown"
+
+
+def detect_level(text: str) -> str:
+    if not text:
+        return "unknown"
+    t = text.lower()
+    for level, kws in LEVEL_KEYWORDS.items():
+        if any(k in t for k in kws):
+            return level
+    return "unknown"
+
+
+def location_match(job_location: str | list, target: str) -> bool:
+    if not target:
+        return True
+    if isinstance(job_location, list):
+        job_location = " ".join(job_location)
+    loc = (job_location or "").lower()
+    tgt = target.lower()
+    if "remote" in tgt:
+        return "remote" in loc or "anywhere" in loc
+    if "usa" in tgt or "united states" in tgt:
+        return "united states" in loc or "usa" in loc or "us" in loc or "remote" in loc
+    return tgt in loc
+
+
+def parse_date(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        # ISO 8601
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except Exception:
+        pass
+    for fmt in ("%a, %d %b %Y %H:%M:%S %z", "%Y-%m-%d", "%Y-%m-%dT%H:%M:%S%z"):
+        try:
+            return datetime.strptime(value, fmt)
+        except Exception:
+            continue
+    return None
+
+
+def is_recent(posted_at: datetime | None) -> bool:
+    if not posted_at:
+        return not STRICT_DATES
+    now = datetime.now(timezone.utc)
+    delta = now - posted_at.astimezone(timezone.utc)
+    return delta.days <= MAX_AGE_DAYS
+
+
+def filter_jobs(jobs: List[Dict], keywords: List[str], location: str, level: str = None, job_type: List[str] | str = None) -> List[Dict]:
+    core_keywords = [kw.lower() for kw in keywords]
+    levels = [l.strip().lower() for l in level.split(",")] if level else []
+    types = [t.strip().lower() for t in (job_type if isinstance(job_type, list) else [job_type] if job_type else [])]
+
+    filtered = []
+    for job in jobs:
+        title = job.get("title", "").lower()
+        desc = (job.get("description") or "").lower()
+        if not any(kw in title or kw in desc for kw in core_keywords):
+            continue
+        if location and not location_match(job.get("location", ""), location):
+            continue
+        if levels:
+            detected = detect_level(title + " " + desc)
+            if detected != "unknown" and detected not in levels:
+                continue
+        if types:
+            normalized = normalize_job_type(job.get("job_type", ""))
+            if normalized != "unknown" and normalized not in types:
+                continue
+        if not is_recent(job.get("posted_at")):
+            continue
+        filtered.append(job)
+    return filtered
+
+
+def score_job(job: Dict, keywords: List[str]) -> float:
+    title = (job.get("title") or "").lower()
+    desc = (job.get("description") or "").lower()
+    score = 0
+    for kw in keywords:
+        if kw.lower() in title:
+            score += 2
+        if kw.lower() in desc:
+            score += 1
+    if "remote" in (job.get("location") or "").lower():
+        score += 1
+    if extract_salary(job.get("salary", "")) > 0:
+        score += 0.5
+    return score
+
+
+async def run_apify_actor(actor_id: str, input_payload: dict) -> list[dict]:
+    if not APIFY_TOKEN:
+        print("  Apify: skipped (no APIFY_TOKEN set)")
+        return []
+    print(f"  Apify: token_len={len(APIFY_TOKEN)}")
+    try:
+        async with aiohttp.ClientSession() as session:
+            run_url = f"https://api.apify.com/v2/acts/{actor_id}/runs?token={APIFY_TOKEN}"
+            async with session.post(run_url, json=input_payload, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                if resp.status not in (200, 201):
+                    return []
+                run_data = await resp.json()
+                dataset_id = run_data.get("data", {}).get("defaultDatasetId")
+            if not dataset_id:
+                return []
+            items_url = f"https://api.apify.com/v2/datasets/{dataset_id}/items?format=json&clean=1"
+            async with session.get(items_url, timeout=aiohttp.ClientTimeout(total=30)) as items_resp:
+                if items_resp.status != 200:
+                    return []
+                return await items_resp.json()
+    except Exception:
+        return []
 
 
 class JobScraper:
@@ -55,7 +194,8 @@ class JobScraper:
                                     "job_type": "Full-time",
                                     "source": "RemoteOK",
                                     "url": item.get('url', f"https://remoteok.com/remote-jobs/{item.get('slug', '')}"),
-                                    "description": (item.get('description', '') or '')[:200]
+                                    "description": (item.get('description', '') or '')[:200],
+                                    "posted_at": parse_date(str(item.get('date') or item.get('epoch') or ""))
                                 })
             print(f"  RemoteOK: found {len(jobs)} jobs")
         except Exception as e:
@@ -76,14 +216,15 @@ class JobScraper:
         try:
             async with aiohttp.ClientSession() as session:
                 # Use first keyword for cleaner API query
-                query = f"{keywords[0]} {location or 'remote'}"
+                loc_str = ", ".join(location) if isinstance(location, list) else (location or "")
+                query = f"{keywords[0]} {loc_str or 'remote'}"
                 url = "https://jsearch.p.rapidapi.com/search"
                 params = {
                     "query": query,
                     "page": "1",
                     "num_pages": "1",
                     "date_posted": "today",
-                    "remote_jobs_only": "true" if "remote" in (location or "").lower() else "false"
+                    "remote_jobs_only": "true" if "remote" in (loc_str).lower() else "false"
                 }
                 headers = {
                     "X-RapidAPI-Key": RAPIDAPI_KEY,
@@ -102,7 +243,10 @@ class JobScraper:
                                 salary = f"${int(item['job_min_salary']):,}+"
 
                             source = "LinkedIn"
-                            publisher = (item.get("job_publisher") or "").lower()
+                            publisher_raw = item.get("job_publisher") or ""
+                            if isinstance(publisher_raw, list):
+                                publisher_raw = " ".join(publisher_raw)
+                            publisher = str(publisher_raw).lower()
                             if "indeed" in publisher:
                                 source = "Indeed"
                             elif "glassdoor" in publisher:
@@ -112,17 +256,18 @@ class JobScraper:
                             elif "ziprecruiter" in publisher:
                                 source = "ZipRecruiter"
                             else:
-                                source = item.get("job_publisher", "JSearch")
+                                source = publisher_raw or "JSearch"
 
                             jobs.append({
                                 "title": item.get("job_title", "Job"),
                                 "company": item.get("employer_name", "N/A"),
                                 "location": ((item.get("job_city") or "") + (", " + item["job_state"] if item.get("job_state") else "")).strip(", ") or "Remote",
                                 "salary": salary,
-                                "job_type": item.get("job_employment_type", "FULLTIME").replace("FULLTIME", "Full-time").replace("CONTRACTOR", "Contract").replace("PARTTIME", "Part-time"),
+                                "job_type": (item.get("job_employment_type") or "FULLTIME").replace("FULLTIME", "Full-time").replace("CONTRACTOR", "Contract").replace("PARTTIME", "Part-time"),
                                 "source": source,
                                 "url": item.get("job_apply_link") or item.get("job_google_link", ""),
-                                "description": (item.get("job_description", "") or "")[:200]
+                                "description": (item.get("job_description", "") or "")[:200],
+                                "posted_at": parse_date(item.get("job_posted_at_datetime_utc"))
                             })
                     else:
                         body = await resp.text()
@@ -156,7 +301,8 @@ class JobScraper:
                                     "job_type": "Full-time" if not item.get("remote") else "Remote",
                                     "source": "Arbeitnow",
                                     "url": item.get("url", ""),
-                                    "description": (item.get("description", "") or "")[:200]
+                                    "description": (item.get("description", "") or "")[:200],
+                                    "posted_at": parse_date(item.get("created_at"))
                                 })
             print(f"  Arbeitnow: found {len(jobs)} jobs")
         except Exception as e:
@@ -243,6 +389,7 @@ class JobScraper:
                                     title = parts[0]
                                     company = parts[1] if len(parts) > 1 else company
 
+                                pub_date = item.find('pubDate')
                                 jobs.append({
                                     "title": title.strip(),
                                     "company": company.strip(),
@@ -251,7 +398,8 @@ class JobScraper:
                                     "job_type": "Full-time",
                                     "source": "Indeed",
                                     "url": link,
-                                    "description": desc[:200]
+                                    "description": desc[:200],
+                                    "posted_at": parse_date(pub_date.text if pub_date is not None else None)
                                 })
             print(f"  Indeed RSS: found {len(jobs)} jobs")
         except Exception as e:
@@ -281,65 +429,283 @@ class JobScraper:
                                 "job_type": item.get("employment_type", "Full-time"),
                                 "source": "FindWork",
                                 "url": item.get("url", ""),
-                                "description": (item.get("text", "") or "")[:200]
+                                "description": (item.get("text", "") or "")[:200],
+                                "posted_at": parse_date(item.get("date_posted"))
                             })
             print(f"  FindWork: found {len(jobs)} jobs")
         except Exception as e:
             print(f"  FindWork error: {e}")
         return jobs
 
-    # ─── 7. Apify LinkedIn Job Scraper (no cookies needed) ──────
-    async def search_apify_linkedin(self, keywords: List[str], location: str = None) -> List[Dict]:
-        """Search LinkedIn jobs via Apify actor (harvestapi/linkedin-job-search)."""
+    # ─── 7. Remotive (free API) ───────────────────────────────────
+    async def search_remotive(self, keywords: List[str], location: str = None) -> List[Dict]:
+        """Search Remotive API (remote jobs)."""
         jobs = []
-        if not APIFY_TOKEN:
-            print("  Apify: skipped (no APIFY_TOKEN set)")
-            return jobs
-
         try:
             async with aiohttp.ClientSession() as session:
-                # Start the actor run
-                url = f"https://api.apify.com/v2/acts/harvestapi~linkedin-job-search/run-sync-get-dataset-items"
-                params = {"token": APIFY_TOKEN}
-                payload = {
-                    "searchTerms": keywords[:3],  # Limit to avoid overuse
-                    "location": location or "United States",
-                    "maxResults": 15,
-                    "sortBy": "date",
-                }
-                headers = {"Content-Type": "application/json"}
-
-                async with session.post(url, json=payload, params=params, headers=headers,
-                                        timeout=aiohttp.ClientTimeout(total=120)) as resp:
+                url = "https://remotive.com/api/remote-jobs"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        if isinstance(data, list):
-                            for item in data:
-                                title = item.get("title") or item.get("jobTitle") or ""
-                                company = item.get("companyName") or item.get("company") or "N/A"
-                                loc = item.get("location") or item.get("jobLocation") or "Remote"
-                                link = item.get("jobUrl") or item.get("url") or item.get("link") or ""
-                                salary = item.get("salary") or "Not listed"
-
-                                if title:
-                                    jobs.append({
-                                        "title": title,
-                                        "company": company,
-                                        "location": loc,
-                                        "salary": salary if salary else "Not listed",
-                                        "job_type": item.get("employmentType", "Full-time"),
-                                        "source": "LinkedIn (Apify)",
-                                        "url": link,
-                                        "description": (item.get("description", "") or "")[:200]
-                                    })
-                    else:
-                        body = await resp.text()
-                        print(f"  Apify: HTTP {resp.status} — {body[:200]}")
-            print(f"  Apify (LinkedIn): found {len(jobs)} jobs")
-        except asyncio.TimeoutError:
-            print("  Apify: timeout (actor took too long)")
+                        for item in data.get("jobs", []):
+                            title = item.get("title", "")
+                            if any(kw.lower() in title.lower() for kw in keywords):
+                                jobs.append({
+                                    "title": title,
+                                    "company": item.get("company_name", "N/A"),
+                                    "location": item.get("candidate_required_location", "Remote"),
+                                    "salary": item.get("salary", "Not listed") or "Not listed",
+                                    "job_type": item.get("job_type", "Full-time"),
+                                    "source": "Remotive",
+                                    "url": item.get("url", ""),
+                                    "description": (item.get("description", "") or "")[:200],
+                                    "posted_at": parse_date(item.get("publication_date"))
+                                })
+            print(f"  Remotive: found {len(jobs)} jobs")
         except Exception as e:
-            print(f"  Apify error: {e}")
+            print(f"  Remotive error: {e}")
+        return jobs
+
+    # ─── 8. WeWorkRemotely RSS (free) ─────────────────────────────
+    async def search_weworkremotely(self, keywords: List[str], location: str = None) -> List[Dict]:
+        """Search WeWorkRemotely RSS feed for data jobs."""
+        jobs = []
+        try:
+            import feedparser
+            url = "https://weworkremotely.com/categories/remote-data-science/jobs.rss"
+            feed = feedparser.parse(url)
+            for entry in feed.entries:
+                title = entry.get("title", "")
+                if any(kw.lower() in (title or "").lower() for kw in keywords):
+                    jobs.append({
+                        "title": title,
+                        "company": "WeWorkRemotely",
+                        "location": "Remote",
+                        "salary": "Not listed",
+                        "job_type": "Full-time",
+                        "source": "WeWorkRemotely",
+                        "url": entry.get("link", ""),
+                        "description": (entry.get("summary", "") or "")[:200],
+                        "posted_at": parse_date(entry.get("published"))
+                    })
+            print(f"  WeWorkRemotely: found {len(jobs)} jobs")
+        except Exception as e:
+            print(f"  WeWorkRemotely error: {e}")
+        return jobs
+
+    # ─── 9. Jobicy (free API) ─────────────────────────────────────
+    async def search_jobicy(self, keywords: List[str], location: str = None) -> List[Dict]:
+        """Search Jobicy API for remote jobs."""
+        jobs = []
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = "https://jobicy.com/api/v2/remote-jobs"
+                params = {
+                    "count": 50,
+                    "tag": "data"  # broad data tag
+                }
+                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        for item in data.get("jobs", []):
+                            title = item.get("jobTitle", "")
+                            if any(kw.lower() in title.lower() for kw in keywords):
+                                jobs.append({
+                                    "title": title,
+                                    "company": item.get("companyName", "N/A"),
+                                    "location": item.get("jobGeo", "Remote"),
+                                    "salary": item.get("annualSalaryMin") and item.get("annualSalaryMax") and f"${item['annualSalaryMin']:,} - ${item['annualSalaryMax']:,}" or "Not listed",
+                                    "job_type": item.get("jobType", "Full-time"),
+                                    "source": "Jobicy",
+                                    "url": item.get("jobLink", ""),
+                                    "description": (item.get("jobDescription", "") or "")[:200],
+                                    "posted_at": parse_date(item.get("pubDate"))
+                                })
+            print(f"  Jobicy: found {len(jobs)} jobs")
+        except Exception as e:
+            print(f"  Jobicy error: {e}")
+        return jobs
+
+    # ─── 10. Dice RSS (free) ──────────────────────────────────────
+    async def search_dice(self, keywords: List[str], location: str = None) -> List[Dict]:
+        jobs = []
+        try:
+            import xml.etree.ElementTree as ET
+            query = quote_plus(" OR ".join(keywords))
+            loc = quote_plus(location or "Remote")
+            url = f"https://www.dice.com/jobs/rss?searchString={query}&location={loc}&countryCode=US"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    if resp.status == 200:
+                        content = await resp.text()
+                        root = ET.fromstring(content)
+                        for item in root.findall('.//item'):
+                            title_el = item.find('title')
+                            link_el = item.find('link')
+                            desc_el = item.find('description')
+                            pub_date = item.find('pubDate')
+                            title = title_el.text if title_el is not None else ""
+                            if any(kw.lower() in (title or "").lower() for kw in keywords):
+                                jobs.append({
+                                    "title": title,
+                                    "company": "Dice",
+                                    "location": location or "Remote",
+                                    "salary": "Not listed",
+                                    "job_type": "Full-time",
+                                    "source": "Dice",
+                                    "url": link_el.text if link_el is not None else "",
+                                    "description": (desc_el.text or "")[:200] if desc_el is not None else "",
+                                    "posted_at": parse_date(pub_date.text if pub_date is not None else None)
+                                })
+            print(f"  Dice: found {len(jobs)} jobs")
+        except Exception as e:
+            print(f"  Dice error: {e}")
+        return jobs
+
+    # ─── 11. BuiltIn RSS (free) ───────────────────────────────────
+    async def search_builtin(self, keywords: List[str], location: str = None) -> List[Dict]:
+        jobs = []
+        try:
+            import xml.etree.ElementTree as ET
+            url = "https://builtin.com/jobs.rss"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    if resp.status == 200:
+                        content = await resp.text()
+                        root = ET.fromstring(content)
+                        for item in root.findall('.//item'):
+                            title_el = item.find('title')
+                            link_el = item.find('link')
+                            desc_el = item.find('description')
+                            pub_date = item.find('pubDate')
+                            title = title_el.text if title_el is not None else ""
+                            if any(kw.lower() in (title or "").lower() for kw in keywords):
+                                jobs.append({
+                                    "title": title,
+                                    "company": "BuiltIn",
+                                    "location": "United States",
+                                    "salary": "Not listed",
+                                    "job_type": "Full-time",
+                                    "source": "BuiltIn",
+                                    "url": link_el.text if link_el is not None else "",
+                                    "description": (desc_el.text or "")[:200] if desc_el is not None else "",
+                                    "posted_at": parse_date(pub_date.text if pub_date is not None else None)
+                                })
+            print(f"  BuiltIn: found {len(jobs)} jobs")
+        except Exception as e:
+            print(f"  BuiltIn error: {e}")
+        return jobs
+
+    # ─── 12. Levels.fyi (best-effort RSS) ─────────────────────────
+    async def search_levelsfyi(self, keywords: List[str], location: str = None) -> List[Dict]:
+        jobs = []
+        try:
+            import feedparser
+            url = "https://www.levels.fyi/jobs/rss"
+            feed = feedparser.parse(url)
+            for entry in feed.entries:
+                title = entry.get("title", "")
+                if any(kw.lower() in (title or "").lower() for kw in keywords):
+                    jobs.append({
+                        "title": title,
+                        "company": "Levels.fyi",
+                        "location": "United States",
+                        "salary": "Not listed",
+                        "job_type": "Full-time",
+                        "source": "Levels.fyi",
+                        "url": entry.get("link", ""),
+                        "description": (entry.get("summary", "") or "")[:200],
+                        "posted_at": parse_date(entry.get("published"))
+                    })
+            print(f"  Levels.fyi: found {len(jobs)} jobs")
+        except Exception as e:
+            print(f"  Levels.fyi error: {e}")
+        return jobs
+
+    # ─── 13. Apify (LinkedIn/Glassdoor/Google Jobs) ────────────────
+    async def search_apify_linkedin(self, keywords: List[str], location: str = None) -> List[Dict]:
+        jobs = []
+        items = await run_apify_actor(
+            "curious_coder/linkedin-jobs-search-scraper",
+            {
+                "queries": [f"{keywords[0]} {location or 'United States'}"],
+                "maxPages": 1,
+            },
+        )
+        for item in items:
+            title = item.get("title") or item.get("jobTitle") or ""
+            if not any(kw.lower() in title.lower() for kw in keywords):
+                continue
+            jobs.append({
+                "title": title,
+                "company": item.get("companyName") or item.get("company") or "N/A",
+                "location": item.get("location") or "Remote",
+                "salary": item.get("salary") or "Not listed",
+                "job_type": item.get("employmentType") or "Full-time",
+                "source": "Apify LinkedIn",
+                "url": item.get("url") or item.get("jobUrl") or "",
+                "description": (item.get("description") or "")[:200],
+                "posted_at": parse_date(item.get("postedAt"))
+            })
+        if jobs:
+            print(f"  Apify LinkedIn: found {len(jobs)} jobs")
+        return jobs
+
+    async def search_apify_glassdoor(self, keywords: List[str], location: str = None) -> List[Dict]:
+        jobs = []
+        items = await run_apify_actor(
+            "radeance/glassdoor-jobs-scraper",
+            {
+                "query": keywords[0],
+                "location": location or "United States",
+                "maxItems": 50,
+            },
+        )
+        for item in items:
+            title = item.get("jobTitle") or item.get("title") or ""
+            if not any(kw.lower() in title.lower() for kw in keywords):
+                continue
+            jobs.append({
+                "title": title,
+                "company": item.get("companyName") or item.get("company") or "N/A",
+                "location": item.get("location") or "Remote",
+                "salary": item.get("salary") or "Not listed",
+                "job_type": item.get("jobType") or "Full-time",
+                "source": "Apify Glassdoor",
+                "url": item.get("jobUrl") or item.get("url") or "",
+                "description": (item.get("jobDescription") or "")[:200],
+                "posted_at": parse_date(item.get("postedAt"))
+            })
+        if jobs:
+            print(f"  Apify Glassdoor: found {len(jobs)} jobs")
+        return jobs
+
+    async def search_apify_googlejobs(self, keywords: List[str], location: str = None) -> List[Dict]:
+        jobs = []
+        items = await run_apify_actor(
+            "orgupdate/google-jobs-scraper",
+            {
+                "queries": [f"{keywords[0]} {location or 'United States'}"],
+                "maxItems": 50,
+            },
+        )
+        for item in items:
+            title = item.get("title") or item.get("jobTitle") or ""
+            if not any(kw.lower() in title.lower() for kw in keywords):
+                continue
+            jobs.append({
+                "title": title,
+                "company": item.get("company") or item.get("companyName") or "N/A",
+                "location": item.get("location") or "Remote",
+                "salary": item.get("salary") or "Not listed",
+                "job_type": item.get("employmentType") or "Full-time",
+                "source": "Apify Google Jobs",
+                "url": item.get("url") or "",
+                "description": (item.get("description") or "")[:200],
+                "posted_at": parse_date(item.get("postedAt"))
+            })
+        if jobs:
+            print(f"  Apify Google Jobs: found {len(jobs)} jobs")
         return jobs
 
     # ─── Orchestrator ────────────────────────────────────────────
@@ -354,7 +720,15 @@ class JobScraper:
             self.search_linkedin_public(keywords, location),
             self.search_indeed_rss(keywords, location),
             self.search_findwork(keywords, location),
+            self.search_remotive(keywords, location),
+            self.search_weworkremotely(keywords, location),
+            self.search_jobicy(keywords, location),
+            self.search_dice(keywords, location),
+            self.search_builtin(keywords, location),
+            self.search_levelsfyi(keywords, location),
             self.search_apify_linkedin(keywords, location),
+            self.search_apify_glassdoor(keywords, location),
+            self.search_apify_googlejobs(keywords, location),
         ]
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -372,16 +746,11 @@ class JobScraper:
                         if extract_salary(j.get('salary', '')) >= salary_min
                         or extract_salary(j.get('salary', '')) == 0]
 
-        # Strict title relevance filter — job title must contain at least one keyword
-        core_keywords = [kw.lower() for kw in keywords]
-        relevant_jobs = []
-        for job in all_jobs:
-            title = job.get('title', '').lower()
-            if any(kw in title for kw in core_keywords):
-                relevant_jobs.append(job)
-        if len(relevant_jobs) < len(all_jobs):
-            print(f"  🔍 Filtered {len(all_jobs)} → {len(relevant_jobs)} by title relevance")
-        all_jobs = relevant_jobs
+        # Apply smarter filters: keywords, location, level, job_type
+        filtered = filter_jobs(all_jobs, keywords, location, level, job_type)
+        if len(filtered) < len(all_jobs):
+            print(f"  🔍 Filtered {len(all_jobs)} → {len(filtered)} by relevance/location/type")
+        all_jobs = filtered
 
         # Deduplicate by URL
         seen = set()
@@ -391,6 +760,9 @@ class JobScraper:
             if url and url not in seen:
                 seen.add(url)
                 unique_jobs.append(job)
+
+        # Score & sort
+        unique_jobs.sort(key=lambda j: score_job(j, keywords), reverse=True)
 
         print(f"\n✅ Total unique jobs: {len(unique_jobs)}")
         return unique_jobs

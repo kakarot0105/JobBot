@@ -3,7 +3,7 @@
 import asyncio
 import os
 import sys
-from app.db import add_user, set_filters, add_job, is_job_sent, mark_sent
+from app.db import add_user, set_filters, add_job, is_job_sent, mark_sent, has_run_today, mark_run
 from app.jobs import JobScraper
 from app.telegram_bot import create_bot
 from app.mock_jobs import get_mock_jobs
@@ -19,22 +19,59 @@ JOB_PROFILES = [
         "name": "Data Engineer",
         "chat_id": -1003357441031,
         "filters": {
-            "keywords": ["AWS Data Engineer", "Data Engineer", "Cloud Engineer", "AI Data Engineer", "Azure Data Engineer"],
+            "keywords": [
+                "Data Engineer",
+                "Senior Data Engineer",
+                "Staff Data Engineer",
+                "Lead Data Engineer",
+                "Principal Data Engineer",
+                "Analytics Engineer",
+                "ETL Engineer",
+                "ELT Engineer",
+                "Data Platform Engineer",
+                "Data Infrastructure Engineer",
+                "Data Pipeline Engineer",
+                "Big Data Engineer",
+                "Spark Engineer",
+                "Snowflake Engineer",
+                "DBT Engineer",
+                "Databricks Engineer",
+                "Cloud Data Engineer",
+                "AWS Data Engineer",
+                "Azure Data Engineer",
+                "GCP Data Engineer",
+                "Data Warehouse Engineer",
+                "Data Integration Engineer",
+                "Data Ops Engineer",
+                "MLOps Data Engineer"
+            ],
             "location": "USA",
-            "salary_min": 100000,
-            "level": "Mid,Senior",
-            "job_type": ["Full-time"],
+            "salary_min": 0,
+            "level": "",
+            "job_type": ["Full-time", "Contract"],
         },
     },
     {
         "name": "Quality Engineer",
         "chat_id": -5015437084,
         "filters": {
-            "keywords": ["Quality Engineer", "CAPA", "Process Improvement", "Supply Quality", "Manufacturing Quality", "FMEA", "DMAIC", "Compliance"],
+            "keywords": [
+                "Quality Inspector",
+                "Quality Technician",
+                "Quality Associate",
+                "Warehouse Quality",
+                "Inventory Quality",
+                "Receiving Inspection",
+                "QC",
+                "QA",
+                "Quality Control",
+                "Warehouse Supervisor",
+                "Logistics Quality"
+            ],
             "location": "USA",
-            "salary_min": 85000,
-            "level": "Mid,Senior",
-            "job_type": ["Full-time"],
+            "salary_min": 0,
+            "level": "",
+            "job_type": ["Full-time", "Contract"],
         },
     },
 ]
@@ -121,24 +158,33 @@ async def daily_search(use_mock: bool = False, send_telegram: bool = True):
             print(f"  ❌ Error: {e}")
 
 
-async def main():
+def main():
     """Main entry point."""
+    run_mode = os.getenv("RUN_MODE", "").lower()
+    if run_mode == "search":
+        use_mock = os.getenv("RUN_MOCK", "false").lower() == "true"
+        run_once = os.getenv("RUN_ONCE", "true").lower() == "true"
+        if run_once and has_run_today("search"):
+            print("✅ RUN_MODE=search already executed today. Skipping.")
+            return
+        print("[JobBot] RUN_MODE=search triggered")
+        asyncio.run(daily_search(use_mock=use_mock, send_telegram=True))
+        if run_once:
+            mark_run("search")
+        return
+
     if len(sys.argv) > 1:
         if sys.argv[1] == "search":
-            # Run job search (production - send to Telegram)
             use_mock = "--mock" in sys.argv
-            await daily_search(use_mock=use_mock, send_telegram=True)
+            asyncio.run(daily_search(use_mock=use_mock, send_telegram=True))
         elif sys.argv[1] == "test":
-            # Run with mock data for testing (no Telegram)
-            await daily_search(use_mock=True, send_telegram=False)
+            asyncio.run(daily_search(use_mock=True, send_telegram=False))
         elif sys.argv[1] == "telegram":
-            # Run Telegram bot
             print("🤖 Starting Telegram bot...")
             app = create_bot()
-            await app.run_polling()
+            app.run_polling()
         elif sys.argv[1] == "setup":
-            # Setup user
-            await setup_user()
+            asyncio.run(setup_user())
         else:
             print("Usage:")
             print("  python main.py search        - Run job search (sends to Telegram)")
@@ -147,19 +193,13 @@ async def main():
             print("  python main.py telegram      - Start Telegram bot")
             print("  python main.py setup         - Setup default user")
     else:
-        # Default: run both
         print("JobBot - Automated Job Search")
         print("=" * 40)
-        
-        # Setup user
-        await setup_user()
-        
-        # Search jobs (with mock fallback, send to Telegram)
-        await daily_search(use_mock=True, send_telegram=True)
-        
+        asyncio.run(setup_user())
+        asyncio.run(daily_search(use_mock=True, send_telegram=True))
         print("\n" + "=" * 40)
         print("To use Telegram bot, run: python main.py telegram")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
