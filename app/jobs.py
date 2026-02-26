@@ -726,9 +726,10 @@ class JobScraper:
             self.search_dice(keywords, location),
             self.search_builtin(keywords, location),
             self.search_levelsfyi(keywords, location),
-            self.search_apify_linkedin(keywords, location),
-            self.search_apify_glassdoor(keywords, location),
-            self.search_apify_googlejobs(keywords, location),
+            # Apify sources disabled — timeout issues
+            # self.search_apify_linkedin(keywords, location),
+            # self.search_apify_glassdoor(keywords, location),
+            # self.search_apify_googlejobs(keywords, location),
         ]
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
