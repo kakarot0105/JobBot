@@ -14,7 +14,6 @@ from urllib.parse import quote_plus
 # Free tier: 500 requests/month — more than enough for daily searches
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY", "2674038040msh80b5aa28db6af96p12a98fjsna87eb2ecb093")
 APIFY_TOKEN = os.getenv("APIFY_TOKEN", "")
-PERPLEXITY_TOKEN = os.getenv("PERPLEXITY_TOKEN", "")
 
 LEVEL_KEYWORDS = {
     "junior": ["junior", "jr", "entry"],
@@ -709,60 +708,6 @@ class JobScraper:
             print(f"  Apify Google Jobs: found {len(jobs)} jobs")
         return jobs
 
-    # ─── Perplexity API Search ──────────────────────────────────
-    async def search_perplexity(self, keywords: List[str], location: str = None) -> List[Dict]:
-        """Search jobs via Perplexity API."""
-        jobs = []
-        if not PERPLEXITY_TOKEN:
-            print("  Perplexity: skipped (no PERPLEXITY_TOKEN set)")
-            return jobs
-
-        try:
-            async with aiohttp.ClientSession() as session:
-                keyword = " ".join(keywords)
-                query = f"Find top 5 remote {keyword} job openings in {location or 'USA'} with salary and company info. Return as JSON array with fields: title, company, location, salary, url, source"
-                
-                url = "https://api.perplexity.ai/chat/completions"
-                headers = {
-                    "Authorization": f"Bearer {PERPLEXITY_TOKEN}",
-                    "Content-Type": "application/json"
-                }
-                payload = {
-                    "model": "sonar",
-                    "messages": [{"role": "user", "content": query}],
-                    "max_tokens": 500
-                }
-
-                async with session.post(url, json=payload, headers=headers,
-                                       timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        result_text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                        # Try to parse JSON from response
-                        try:
-                            import json as json_lib
-                            job_data = json_lib.loads(result_text)
-                            if isinstance(job_data, list):
-                                for item in job_data:
-                                    jobs.append({
-                                        "title": item.get("title", "Job"),
-                                        "company": item.get("company", "N/A"),
-                                        "location": item.get("location", "Remote"),
-                                        "salary": item.get("salary", "Not listed"),
-                                        "job_type": "Full-time",
-                                        "source": "Perplexity",
-                                        "url": item.get("url", ""),
-                                        "description": ""
-                                    })
-                        except:
-                            print(f"  Perplexity: could not parse JSON response")
-                    else:
-                        print(f"  Perplexity: HTTP {resp.status}")
-            print(f"  Perplexity: found {len(jobs)} jobs")
-        except Exception as e:
-            print(f"  Perplexity error: {e}")
-        return jobs
-
     # ─── Orchestrator ────────────────────────────────────────────
     async def search_all(self, keywords: List[str], location: str, salary_min: int = None,
                          level: str = None, job_type: str = None) -> List[Dict]:
@@ -781,7 +726,6 @@ class JobScraper:
             self.search_dice(keywords, location),
             self.search_builtin(keywords, location),
             self.search_levelsfyi(keywords, location),
-            self.search_perplexity(keywords, location),
             # Apify sources disabled — timeout issues
             # self.search_apify_linkedin(keywords, location),
             # self.search_apify_glassdoor(keywords, location),
