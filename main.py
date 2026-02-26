@@ -3,64 +3,58 @@
 import asyncio
 import os
 import sys
-from app.db import add_user, set_filters
-from app.jobs import search_jobs_for_user
+from app.db import add_user, set_filters, add_job, is_job_sent, mark_sent
+from app.jobs import JobScraper
 from app.telegram_bot import create_bot
 from app.mock_jobs import get_mock_jobs
 from telegram import Bot
 
 # Hardcoded user preferences (for @banna)
 DEFAULT_USER_TELEGRAM_ID = "6756402815"
-NOTIFICATION_CHAT_ID = -1003357441031  # JobBot Alerts supergroup (migrated)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 
-DEFAULT_FILTERS = {
-    "keywords": ["Data Engineer"],
-    "location": "USA,Remote",
-    "salary_min": None,
-    "level": "Mid",
-    "job_type": ["Contract", "Full-time"]
-}
+# Multiple job profiles — each with its own Telegram group
+JOB_PROFILES = [
+    {
+        "name": "Data Engineer",
+        "chat_id": -1003357441031,
+        "filters": {
+            "keywords": ["AWS Data Engineer", "Data Engineer", "Cloud Engineer", "AI Data Engineer", "Azure Data Engineer"],
+            "location": "USA",
+            "salary_min": 100000,
+            "level": "Mid,Senior",
+            "job_type": ["Full-time"],
+        },
+    },
+    {
+        "name": "Quality Engineer",
+        "chat_id": -5015437084,
+        "filters": {
+            "keywords": ["Quality Engineer", "CAPA", "Process Improvement", "Supply Quality", "Manufacturing Quality", "FMEA", "DMAIC", "Compliance"],
+            "location": "USA",
+            "salary_min": 85000,
+            "level": "Mid,Senior",
+            "job_type": ["Full-time"],
+        },
+    },
+]
 
 
-async def setup_user():
-    """Setup default user with preferences."""
-    user_id = add_user(DEFAULT_USER_TELEGRAM_ID, "banna")
-    set_filters(
-        user_id,
-        keywords=DEFAULT_FILTERS["keywords"],
-        location=DEFAULT_FILTERS["location"],
-        salary_min=DEFAULT_FILTERS.get("salary_min"),
-        level=DEFAULT_FILTERS.get("level"),
-        job_type=DEFAULT_FILTERS.get("job_type")
-    )
-    print(f"✅ User setup complete: {user_id}")
-    return user_id
+scraper = JobScraper()
 
 
-async def daily_search(use_mock: bool = False, send_telegram: bool = True):
-    """Run daily job search."""
-    print("\n🔍 Starting daily job search...")
-    user_id = await setup_user()
-    
+async def send_jobs_to_telegram(jobs: list, chat_id: int, profile_name: str, user_id: int):
+    """Send only NEW jobs to a specific Telegram chat."""
+    if not TELEGRAM_TOKEN or not jobs:
+        return 0
+    sent = 0
     try:
-        # Try real search first
-        jobs = await search_jobs_for_user(user_id)
-        
-        # If no jobs found and in test mode, use mock data
-        if not jobs and use_mock:
-            print("⚠️  External APIs unavailable (sandbox environment)")
-            print("📌 Using mock job data for demonstration...")
-            jobs = get_mock_jobs()
-        
-        print(f"✅ Found {len(jobs)} jobs!")
-        
-        # Send to Telegram if token is available
-        if send_telegram and TELEGRAM_TOKEN and jobs:
-            try:
-                bot = Bot(token=TELEGRAM_TOKEN)
-                for job in jobs[:10]:  # Send top 10
-                    msg = f"""
+        bot = Bot(token=TELEGRAM_TOKEN)
+        for job in jobs:
+            # Skip already-sent jobs
+            if is_job_sent(job['url'], chat_id):
+                continue
+            msg = f"""
 💼 **{job['title']}**
 🏢 {job['company']}
 📍 {job['location']}
@@ -69,26 +63,62 @@ async def daily_search(use_mock: bool = False, send_telegram: bool = True):
 
 [Apply Here]({job['url']})
 """
-                    await bot.send_message(
-                        chat_id=NOTIFICATION_CHAT_ID,
-                        text=msg,
-                        parse_mode="Markdown"
-                    )
-                    await asyncio.sleep(0.5)
-                print(f"📨 Sent {min(10, len(jobs))} jobs to Telegram!")
-            except Exception as e:
-                print(f"⚠️  Could not send Telegram: {e}")
-        
-        # Print first 10 jobs
-        for i, job in enumerate(jobs[:10]):
-            print(f"\n{i+1}. {job['title']} @ {job['company']}")
-            print(f"   Location: {job['location']}")
-            print(f"   Salary: {job['salary']}")
-            print(f"   Type: {job['job_type']}")
-            print(f"   Source: {job['source']}")
-            print(f"   URL: {job['url']}")
+            await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+            # Store in DB and mark as sent
+            job_id = add_job(
+                title=job['title'], company=job['company'], location=job['location'],
+                salary=job['salary'], job_type=job['job_type'], source=job['source'],
+                url=job['url'], description=job.get('description')
+            )
+            mark_sent(user_id, job_id, chat_id)
+            sent += 1
+            await asyncio.sleep(0.5)
+            if sent >= 10:
+                break
+        if sent:
+            print(f"  📨 Sent {sent} NEW jobs to [{profile_name}]!")
+        else:
+            print(f"  ✅ No new jobs for [{profile_name}] (all already sent)")
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"  ⚠️  Telegram error for [{profile_name}]: {e}")
+    return sent
+
+
+async def daily_search(use_mock: bool = False, send_telegram: bool = True):
+    """Run daily job search across all profiles."""
+    print("\n🔍 Starting daily job search...")
+
+    user_id = add_user(DEFAULT_USER_TELEGRAM_ID, "banna")
+
+    for profile in JOB_PROFILES:
+        name = profile["name"]
+        chat_id = profile["chat_id"]
+        print(f"\n── {name} ──")
+
+        f = profile["filters"]
+        try:
+            jobs = await scraper.search_all(
+                keywords=f["keywords"],
+                location=f["location"],
+                salary_min=f.get("salary_min"),
+                level=f.get("level"),
+                job_type=f.get("job_type"),
+            )
+
+            if not jobs and use_mock:
+                print("  ⚠️  External APIs unavailable — using mock data")
+                jobs = get_mock_jobs()
+
+            print(f"  ✅ Found {len(jobs)} jobs")
+
+            if send_telegram:
+                await send_jobs_to_telegram(jobs, chat_id, name, user_id)
+
+            for i, job in enumerate(jobs[:10]):
+                print(f"  {i+1}. {job['title']} @ {job['company']}")
+                print(f"     📍 {job['location']} | 💰 {job['salary']} | {job['source']}")
+        except Exception as e:
+            print(f"  ❌ Error: {e}")
 
 
 async def main():
